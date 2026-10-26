@@ -71,7 +71,7 @@ npm start
 
 ## systemdで常時起動
 
-/ etc / systemd / system / chatsite.service を作成し、実際のLinuxユーザー名とリポジトリの配置先を合わせます：
+/etc/systemd/system/chatsite.service を作成し、実際のLinuxユーザー名とリポジトリの配置先を合わせます：
 
 ```ini
 [Unit]
