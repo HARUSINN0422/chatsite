@@ -14,6 +14,7 @@ main{max-width:960px;margin:auto;padding:22px 16px 150px}.panel{background:var(-
 .muted{color:var(--muted)}.hidden{display:none!important}#messages{display:flex;flex-direction:column;gap:12px;margin:18px 0}.msg{padding:13px 15px;background:rgba(23,28,35,.94);border:1px solid var(--line);border-radius:16px;max-width:min(100%,720px);overflow-wrap:anywhere;box-shadow:0 5px 18px rgba(0,0,0,.12)}.msg.mine{align-self:flex-end;background:linear-gradient(145deg,rgba(37,75,118,.92),rgba(24,43,62,.96));border-color:rgba(131,184,255,.28);border-bottom-right-radius:5px}.msg:not(.mine){border-bottom-left-radius:5px}.meta{font-size:12px;color:var(--muted);margin-bottom:5px;display:flex;gap:8px;flex-wrap:wrap}.msg img{display:block;max-width:100%;max-height:420px;object-fit:contain;border-radius:12px;margin-top:9px}
 .composer{position:fixed;bottom:0;left:0;right:0;background:rgba(14,18,24,.94);border-top:1px solid var(--line);padding:12px max(12px,calc((100% - 960px)/2));z-index:3;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 -12px 35px rgba(0,0,0,.22)}.compose-row{display:flex;gap:8px;align-items:flex-end}.compose-row textarea{flex:1;resize:vertical;min-height:46px;max-height:140px;background:var(--field);color:var(--text);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:11px 13px;outline:none}
 input[type=text],input[type=password]{display:block;width:100%;margin:8px 0 14px;padding:12px 13px;border:1px solid rgba(255,255,255,.16);border-radius:12px;background:var(--field);color:var(--text);outline:none}input:focus,textarea:focus{border-color:rgba(131,184,255,.8)!important;box-shadow:0 0 0 3px rgba(131,184,255,.12)}label.field{display:block;text-align:left;font-size:13px;color:var(--muted)}.auth-actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}.top-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.status{margin:10px 0;color:var(--muted);font-size:13px}a{color:#a8ceff}.small{font-size:12px}#chat>.panel{border-radius:18px;padding:16px 18px}#chat>.panel strong{font-size:17px}#loginError:empty{display:none}
+.chat-layout{display:grid;grid-template-columns:minmax(245px,320px) minmax(0,1fr);gap:16px;align-items:start}.sidebar{padding:16px;min-width:0}.sidebar h2{font-size:15px;margin:4px 0 8px}.sidebar input{margin:7px 0 10px}.user-results,.conversation-list{display:flex;flex-direction:column;gap:7px;margin:10px 0 16px}.user-result,.conversation-item{display:flex;align-items:center;gap:8px;padding:9px 10px;border:1px solid var(--line);border-radius:12px;background:rgba(23,28,35,.72);min-width:0}.user-result .username{flex:1;overflow-wrap:anywhere}.user-result button{padding:6px 9px;font-size:12px}.user-result input{width:auto;margin:0}.conversation-item{display:block;width:100%;text-align:left;background:rgba(23,28,35,.72);font-weight:500}.conversation-item.active{border-color:var(--accent);background:rgba(37,75,118,.55)}.conversation-item strong,.conversation-item span{display:block;overflow-wrap:anywhere}.conversation-item span{font-size:12px;color:var(--muted);font-weight:400;margin-top:3px}.group-form{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:12px 0;margin:12px 0}.group-form button{width:100%;margin-top:9px}.conversation-area{min-width:0}.conversation-heading{padding:15px 18px;border-radius:18px}.conversation-heading strong{font-size:17px}.conversation-area #messages{min-height:180px}.chat-layout #status{margin:10px 2px}.empty-state{color:var(--muted);font-size:13px;padding:12px}.msg img{cursor:pointer}@media(max-width:760px){.chat-layout{grid-template-columns:1fr}.sidebar{order:1}.conversation-area{order:0}.user-results{max-height:180px;overflow:auto}.conversation-list{max-height:220px;overflow:auto}.conversation-heading{padding:13px}}
 @media(max-width:600px){header{padding:11px 12px}header h1{font-size:18px}header .top-actions{gap:6px}header button{padding:8px 10px;font-size:13px}main{padding:14px 10px 160px}.panel{padding:18px;border-radius:20px}.center{margin:5vh auto}.compose-row{gap:6px}.compose-row textarea{min-width:0;padding:10px}.composer{padding:10px}.composer label.secondary{padding:10px 9px!important}.composer button{padding:10px 12px}}
 </style>
 </head>
@@ -35,42 +36,111 @@ input[type=text],input[type=password]{display:block;width:100%;margin:8px 0 14px
  <p class="muted small">アカウント情報とメッセージはRaspberry Piに保存されます。</p>
 </section>
 <section id="chat" class="hidden">
- <div class="panel"><strong>全体チャット</strong><div class="muted small">テキストと写真はRaspberry Piに保存されます。写真は保存から3日経過すると自動削除されます。</div></div>
- <div id="status" class="status">接続中…</div><div id="messages" aria-live="polite"></div>
+ <div class="chat-layout">
+  <aside class="panel sidebar">
+   <h2>ユーザー検索</h2>
+   <input id="userSearch" type="text" placeholder="ユーザー名を検索" maxlength="24" autocomplete="off" aria-label="ユーザー検索">
+   <div class="muted small">DMを開始するか、グループに追加するユーザーを選択します。</div>
+   <div id="userResults" class="user-results"></div>
+   <form id="groupForm" class="group-form">
+    <label class="field" for="groupName">グループ名</label>
+    <input id="groupName" type="text" maxlength="60" placeholder="グループ名">
+    <div class="muted small">チェックを入れたユーザーから、自分以外に2人以上選択してください。</div>
+    <button type="submit">グループを作成</button>
+   </form>
+   <h2>会話</h2>
+   <div id="conversationList" class="conversation-list"></div>
+  </aside>
+  <section class="conversation-area">
+   <div class="panel conversation-heading"><strong id="conversationTitle">会話を選択してください</strong><div id="conversationInfo" class="muted small">ユーザー検索からDMまたはグループを開始できます。</div></div>
+   <div id="status" class="status">接続中…</div><div id="messages" aria-live="polite"></div>
+  </section>
+ </div>
 </section>
 </main>
 <form id="composer" class="composer hidden"><div class="compose-row"><label for="photo" class="secondary" style="padding:10px 12px;border-radius:10px;cursor:pointer;white-space:nowrap">写真<input id="photo" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif" hidden></label><textarea id="messageText" placeholder="メッセージを書く…" maxlength="4000" aria-label="メッセージ"></textarea><button id="send" type="submit">送信</button></div><div id="photoName" class="small muted"></div><div class="small muted">写真は10MB以下。保存から3日後に自動削除されます。</div></form>
 <script>
 const $ = id => document.getElementById(id);
+const BASE_PATH = location.pathname.startsWith("/chatsite") ? "/chatsite" : "";
+const appUrl = path => BASE_PATH + (path.startsWith("/") ? path : "/" + path);
 let currentUser = null, pollTimer = null, selectedPhoto = null, registerMode = false;
+let conversations = [], currentConversation = null, selectedGroupMembers = new Set(), searchTimer = null;
 function setStatus(s){$("status").textContent=s}
 async function api(url, options={}) {
  const headers={...(options.headers||{})};
  if(options.body && !(options.body instanceof FormData)) headers["Content-Type"]="application/json";
- const res=await fetch(url,{credentials:"same-origin",...options,headers});
+ const res=await fetch(appUrl(url),{credentials:"same-origin",...options,headers});
  const data=await res.json().catch(()=>({}));
  if(!res.ok) throw new Error(data.error||("サーバーエラー ("+res.status+")"));
  return data;
 }
 function renderMessages(messages){
  $("messages").replaceChildren();
+ if(!currentConversation){$("messages").innerHTML='<div class="empty-state">左側から会話を選ぶか、ユーザー検索でDMを開始してください。</div>';return}
+ if(!messages.length){$("messages").innerHTML='<div class="empty-state">まだメッセージはありません。最初のメッセージを送信してください。</div>';return}
  messages.forEach(m=>{
   const el=document.createElement("article");el.className="msg"+(m.uid===currentUser.uid?" mine":"");
   const meta=document.createElement("div");meta.className="meta";
   meta.textContent=(m.displayName||"ユーザー")+" · "+(m.createdAt?new Date(m.createdAt).toLocaleString():"");el.append(meta);
   if(m.text){const p=document.createElement("div");p.textContent=m.text;el.append(p)}
-  if(m.imageUrl){const a=document.createElement("a");a.href=m.imageUrl;a.target="_blank";a.rel="noopener noreferrer";const img=document.createElement("img");img.src=m.imageUrl;img.alt="共有された写真";img.loading="lazy";img.onerror=()=>{a.removeAttribute("href");img.alt="この写真は保存期限を過ぎたため削除されています";img.style.display="none";const note=document.createElement("div");note.className="muted small";note.textContent="写真は保存から3日経過したため削除されています";el.append(note)};a.append(img);el.append(a)}
+  if(m.imageUrl){const a=document.createElement("a");a.href=appUrl(m.imageUrl);a.target="_blank";a.rel="noopener noreferrer";const img=document.createElement("img");img.src=appUrl(m.imageUrl);img.alt="共有された写真";img.loading="lazy";img.onerror=()=>{a.removeAttribute("href");img.alt="この写真は保存期限を過ぎたため削除されています";img.style.display="none";const note=document.createElement("div");note.className="muted small";note.textContent="写真は保存から3日経過したため削除されています";el.append(note)};a.append(img);el.append(a)}
   $("messages").append(el);
  });
 }
 async function loadMessages(){
- try{const data=await api("/api/messages");renderMessages(data.messages||[]);setStatus("Raspberry Piに接続中")}
+ if(!currentConversation)return;
+ try{const data=await api("/api/conversations/"+encodeURIComponent(currentConversation.id)+"/messages");renderMessages(data.messages||[]);setStatus("接続中")}
  catch(e){setStatus("メッセージ読み込みエラー: "+e.message)}
 }
+function renderConversations(){
+ const list=$("conversationList");list.replaceChildren();
+ if(!conversations.length){list.innerHTML='<div class="empty-state">会話はまだありません。</div>';return}
+ conversations.forEach(c=>{
+  const b=document.createElement("button");b.type="button";b.className="conversation-item"+(currentConversation&&currentConversation.id===c.id?" active":"");
+  const title=document.createElement("strong");title.textContent=(c.type==="group"?"グループ · ":"")+c.name;
+  const preview=document.createElement("span");preview.textContent=c.lastMessage|| (c.type==="group"?c.members+"人のグループ":"DMを開始しました");
+  b.append(title,preview);b.addEventListener("click",()=>selectConversation(c.id));list.append(b);
+ });
+}
+async function loadConversations(){
+ try{
+  const data=await api("/api/conversations");conversations=data.conversations||[];
+  if(currentConversation){const updated=conversations.find(c=>c.id===currentConversation.id);if(updated)currentConversation=updated;else currentConversation=null}
+  renderConversations();
+  if(!currentConversation&&conversations.length) await selectConversation(conversations[0].id,false);
+  else if(!currentConversation){$("conversationTitle").textContent="会話を選択してください";$("conversationInfo").textContent="ユーザー検索からDMまたはグループを開始できます。";$("composer").classList.add("hidden");renderMessages([])}
+ }catch(e){setStatus("会話一覧の読み込みエラー: "+e.message)}
+}
+async function selectConversation(id, reloadList=true){
+ const c=conversations.find(item=>item.id===id);if(!c)return;
+ currentConversation=c;$("conversationTitle").textContent=c.name;$("conversationInfo").textContent=(c.type==="group"?"グループ":"ダイレクトメッセージ")+" · "+c.members+"人";
+ $("composer").classList.remove("hidden");renderConversations();await loadMessages();
+}
+async function searchUsers(){
+ const q=$("userSearch").value.trim(), box=$("userResults");box.replaceChildren();
+ if(!q){box.innerHTML='<div class="empty-state">ユーザー名を入力してください。</div>';return}
+ try{
+  const data=await api("/api/users?q="+encodeURIComponent(q));
+  if(!data.users.length){box.innerHTML='<div class="empty-state">ユーザーが見つかりません。</div>';return}
+  data.users.forEach(user=>{
+   const row=document.createElement("div");row.className="user-result";
+   const check=document.createElement("input");check.type="checkbox";check.checked=selectedGroupMembers.has(user.uid);check.setAttribute("aria-label",user.username+"をグループに追加");
+   check.addEventListener("change",()=>{if(check.checked)selectedGroupMembers.add(user.uid);else selectedGroupMembers.delete(user.uid)});
+   const name=document.createElement("span");name.className="username";name.textContent=user.username;
+   const dm=document.createElement("button");dm.type="button";dm.textContent="DM";dm.addEventListener("click",async()=>{
+    try{const d=await api("/api/conversations/dm",{method:"POST",body:JSON.stringify({uid:user.uid})});await loadConversations();const c=conversations.find(x=>x.id===d.conversation.id);if(c)await selectConversation(c.id)}
+    catch(e){setStatus("DM開始エラー: "+e.message)}
+   });
+   row.append(check,name,dm);box.append(row);
+  });
+ }catch(e){box.innerHTML='<div class="empty-state"></div>';box.firstChild.textContent=e.message}
+}
 function showSignedIn(user){
- currentUser=user;$("loginPanel").classList.add("hidden");$("chat").classList.remove("hidden");$("composer").classList.remove("hidden");
+ currentUser=user;$("loginPanel").classList.add("hidden");$("chat").classList.remove("hidden");
  $("userLabel").textContent=user.username;$("signOut").classList.remove("hidden");$("notifyButton").classList.remove("hidden");
- loadMessages();if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(loadMessages,3000);
+ $("composer").classList.add("hidden");loadConversations();searchUsers();
+ if(pollTimer)clearInterval(pollTimer);
+ pollTimer=setInterval(()=>{loadConversations();loadMessages()},3000);
 }
 function showAuth(){
  $("loginPanel").classList.remove("hidden");$("chat").classList.add("hidden");$("composer").classList.add("hidden");
@@ -92,9 +162,9 @@ async function enableNotifications(){
   if(!("serviceWorker" in navigator)||!("PushManager" in window)||!("Notification" in window))throw new Error("このブラウザはプッシュ通知に対応していません");
   if(!window.isSecureContext)throw new Error("通知にはHTTPS接続が必要です（localhostを除く）");
   if(await Notification.requestPermission()!=="granted")throw new Error("ブラウザの通知許可が必要です");
-  const keyRes=await fetch("/api/push/public-key",{cache:"no-store"});const keyData=await keyRes.json();
+  const keyRes=await fetch(appUrl("/api/push/public-key"),{cache:"no-store"});const keyData=await keyRes.json();
   if(!keyRes.ok||!keyData.publicKey)throw new Error(keyData.error||"サーバー側のVAPID設定が未完了です");
-  const registration=await navigator.serviceWorker.register("/sw.js");await navigator.serviceWorker.ready;
+  const swUrl=appUrl("/sw.js");const registration=await navigator.serviceWorker.register(swUrl,{scope:appUrl("/")+"/"});await navigator.serviceWorker.ready;
   let subscription=await registration.pushManager.getSubscription();
   if(!subscription)subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(keyData.publicKey)});
   await api("/api/push/subscribe",{method:"POST",body:JSON.stringify({subscription:subscription.toJSON()})});
@@ -103,7 +173,7 @@ async function enableNotifications(){
  finally{button.disabled=false}
 }
 async function disableNotifications(){
- try{const registration=await navigator.serviceWorker.getRegistration("/sw.js");const sub=registration&&await registration.pushManager.getSubscription();
+ try{const registration=await navigator.serviceWorker.getRegistration(appUrl("/sw.js"));const sub=registration&&await registration.pushManager.getSubscription();
   if(sub){await api("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint:sub.endpoint})});await sub.unsubscribe()}
  }catch(e){console.error(e)}
 }
@@ -118,25 +188,31 @@ $("authForm").addEventListener("submit",async e=>{
 });
 $("toggleAuth").addEventListener("click",()=>{registerMode=!registerMode;$("loginError").textContent="";showAuth()});
 $("notifyButton").addEventListener("click",enableNotifications);
-$("signOut").addEventListener("click",async()=>{await disableNotifications();try{await api("/api/logout",{method:"POST"})}catch{}currentUser=null;if(pollTimer)clearInterval(pollTimer);pollTimer=null;registerMode=false;showAuth()});
+$("signOut").addEventListener("click",async()=>{await disableNotifications();try{await api("/api/logout",{method:"POST"})}catch{}currentUser=null;currentConversation=null;conversations=[];if(pollTimer)clearInterval(pollTimer);pollTimer=null;registerMode=false;showAuth()});
+$("userSearch").addEventListener("input",()=>{clearTimeout(searchTimer);searchTimer=setTimeout(searchUsers,180)});
+$("groupForm").addEventListener("submit",async e=>{
+ e.preventDefault();const name=$("groupName").value.trim();
+ try{
+  const data=await api("/api/conversations/group",{method:"POST",body:JSON.stringify({name,memberUids:[...selectedGroupMembers]})});
+  $("groupName").value="";selectedGroupMembers.clear();await searchUsers();await loadConversations();
+  const c=conversations.find(x=>x.id===data.conversation.id);if(c)await selectConversation(c.id);
+ }catch(err){setStatus("グループ作成エラー: "+err.message)}
+});
 $("photo").addEventListener("change",e=>{selectedPhoto=e.target.files[0]||null;$("photoName").textContent=selectedPhoto?selectedPhoto.name+" ("+Math.ceil(selectedPhoto.size/1024)+" KB)":""});
 $("composer").addEventListener("submit",async e=>{
- e.preventDefault();if(!currentUser)return;
+ e.preventDefault();if(!currentUser||!currentConversation)return;
  const text=$("messageText").value.trim(),photo=selectedPhoto;if(!text&&!photo)return;
  $("send").disabled=true;
  try{
   let imageUrl="";
   if(photo){setStatus("Raspberry Piに写真を保存中…");const form=new FormData();form.append("photo",photo);const uploaded=await api("/api/photos",{method:"POST",body:form});imageUrl=uploaded.imageUrl}
-  await api("/api/messages",{method:"POST",body:JSON.stringify({text,imageUrl})});
-  $("messageText").value="";$("photo").value="";$("photoName").textContent="";selectedPhoto=null;await loadMessages();
+  await api("/api/conversations/"+encodeURIComponent(currentConversation.id)+"/messages",{method:"POST",body:JSON.stringify({text,imageUrl})});
+  $("messageText").value="";$("photo").value="";$("photoName").textContent="";selectedPhoto=null;await loadMessages();await loadConversations();
  }catch(err){setStatus("送信エラー: "+err.message)}
  finally{$("send").disabled=false}
 });
-async function init(){
- try{const data=await api("/api/me");showSignedIn(data.user)}
- catch{showAuth()}
-}
+async function init(){try{const data=await api("/api/me");showSignedIn(data.user)}catch{showAuth()}}
 init();
-if("serviceWorker" in navigator && location.protocol!=="file:"){window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.error))}
+if("serviceWorker" in navigator && location.protocol!=="file:"){window.addEventListener("load",()=>navigator.serviceWorker.register(appUrl("/sw.js"),{scope:appUrl("/")+"/"}).catch(console.error))}
 </script>
 </body></html>
