@@ -80,7 +80,7 @@ async function writeSubscriptions(data) {
 }
 function getSession(req) {
   const cookie = req.headers.cookie || "";
-  const match = cookie.match(/(?:^|;\\s*)chatsite_session=([a-f0-9]{64})(?:;|$)/);
+  const match = cookie.match(/(?:^|;\s*)chatsite_session=([a-f0-9]{64})(?:;|$)/);
   if (!match) return null;
   const session = sessions.get(match[1]);
   if (!session) return null;
