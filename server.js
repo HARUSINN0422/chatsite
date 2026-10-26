@@ -2,6 +2,7 @@ const express = require("express");
 const path = require("path");
 const fsp = require("fs").promises;
 const crypto = require("crypto");
+const { execFile } = require("child_process");
 const admin = require("firebase-admin");
 const webpush = require("web-push");
 const app = express();
@@ -11,6 +12,9 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.jsonl");
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, "push-subscriptions.json");
 const MAX_TEXT = 4000, MAX_MESSAGES = 200;
+const AUTO_UPDATE_INTERVAL = 60 * 1000;
+const AUTO_UPDATE_BRANCH = "main";
+let updateInProgress = false;
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
 const pushConfigured = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT);
@@ -112,4 +116,64 @@ app.post("/api/messages", requireLogin, async (req, res, next) => {
 app.use((req, res, next) => { if (req.path === "/data" || req.path.startsWith("/data/")) return res.status(404).end(); next(); });
 app.use(express.static(__dirname, { index: "index.html", etag: true, maxAge: "5m" }));
 app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: "サーバー内部エラー" }); });
-app.listen(PORT, HOST, () => console.log("ChatSite listening on http://" + HOST + ":" + PORT));
+function checkForUpdates() {
+  if (updateInProgress) return;
+  updateInProgress = true;
+  const finish = () => { updateInProgress = false; };
+
+  execFile("git", ["fetch", "origin", AUTO_UPDATE_BRANCH], { cwd: __dirname }, (fetchError) => {
+    if (fetchError) {
+      console.error("[AutoUpdate] GitHubの確認に失敗しました:", fetchError.message);
+      finish();
+      return;
+    }
+    execFile("git", ["rev-parse", "HEAD"], { cwd: __dirname }, (localError, localStdout) => {
+      if (localError) {
+        console.error("[AutoUpdate] 現在のコミットを取得できません:", localError.message);
+        finish();
+        return;
+      }
+      execFile("git", ["rev-parse", "origin/" + AUTO_UPDATE_BRANCH], { cwd: __dirname }, (remoteError, remoteStdout) => {
+        if (remoteError) {
+          console.error("[AutoUpdate] GitHub側のコミットを取得できません:", remoteError.message);
+          finish();
+          return;
+        }
+        if (localStdout.trim() === remoteStdout.trim()) {
+          finish();
+          return;
+        }
+        console.log("[AutoUpdate] GitHubに新しい更新があります。取得します。");
+        execFile("git", ["pull", "--ff-only", "origin", AUTO_UPDATE_BRANCH], { cwd: __dirname }, (pullError, pullStdout, pullStderr) => {
+          if (pullError) {
+            console.error("[AutoUpdate] git pullに失敗しました:", pullError.message);
+            if (pullStderr) console.error(pullStderr.trim());
+            finish();
+            return;
+          }
+          if (pullStdout) console.log(pullStdout.trim());
+          console.log("[AutoUpdate] npm installを実行します。");
+          execFile("npm", ["install", "--omit=dev"], { cwd: __dirname }, (npmError, npmStdout, npmStderr) => {
+            if (npmError) {
+              console.error("[AutoUpdate] npm installに失敗しました:", npmError.message);
+              if (npmStderr) console.error(npmStderr.trim());
+              finish();
+              return;
+            }
+            if (npmStdout) console.log(npmStdout.trim());
+            console.log("[AutoUpdate] 更新完了。Node.jsプロセスを再起動します。");
+            // systemdのRestart=on-failureに再起動を任せる。
+            process.exit(75);
+          });
+        });
+      });
+    });
+  });
+}
+
+app.listen(PORT, HOST, () => {
+  console.log("ChatSite listening on http://" + HOST + ":" + PORT);
+  console.log("[AutoUpdate] GitHubの" + AUTO_UPDATE_BRANCH + "ブランチを60秒ごとに確認します。");
+  setTimeout(checkForUpdates, AUTO_UPDATE_INTERVAL);
+  setInterval(checkForUpdates, AUTO_UPDATE_INTERVAL);
+});
