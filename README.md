@@ -1,18 +1,18 @@
-# ChatSite (Raspberry Pi + Node.js)
+# ChatSite — Raspberry Pi / Node.js
 
-Googleアカウントでログインする全体チャットです。**Webサイトの配信とテキストメッセージの保存はRaspberry Pi上のNode.jsサーバーが担当**します。写真はGoogle Driveに保存し、メッセージには写真URLを保存します。
+Googleアカウントでログインする全体チャット。サイト配信・テキスト保存はRaspberry Pi、写真本体はGoogle Driveです。
 
-## 構成
+## 主な構成
 
-- `server.js`: Node.js/ExpressのWebサーバー、API、Firebase IDトークン検証
-- `data/messages.jsonl`: チャット本文の保存先（実行時に自動作成。Gitには含めません）
-- `index.html`: チャット画面
-- Firebase Authentication: Googleアカウントでのログインのみ。本文保存には使いません
-- Google Drive: 写真本体の保存先
+- Node.js/ExpressでWebサイトとAPIを配信。既定ポートは **3010**
+- テキストと写真URLを DATA_DIR/messages.jsonl に追記保存
+- Firebase AuthenticationはGoogleログインとIDトークン検証だけに使用
+- Web Pushで新着通知。通知購読は DATA_DIR/push-subscriptions.json に保存
+- systemd timerでGitHubのmainを毎分確認し、更新があればPi上のコードを更新してサービスを再起動
 
-## Raspberry Piで起動する
+## Raspberry Piへの初回導入
 
-Node.js 18以降をインストールし、リポジトリをPiにcloneしてください。
+Node.js 18以降とGitをインストールしてから：
 
 ```bash
 git clone https://github.com/HARUSINN0422/chatsite.git
@@ -20,45 +20,58 @@ cd chatsite
 npm install
 ```
 
-### 1. Firebaseログインを設定
+### 1. Googleログイン設定
 
-1. [Firebase Console](https://console.firebase.google.com/)でプロジェクトを作成します。
-2. Authentication → Sign-in method で Google を有効化します。
-3. Authenticationの設定で、実際にアクセスするドメインを承認済みドメインに追加します。
-4. プロジェクト設定からWebアプリの設定を取得し、`index.html` の `FIREBASE_CONFIG` の `YOUR_...` を置き換えます。
-5. Firebaseプロジェクト設定からサービスアカウントの秘密鍵JSONを発行し、**リポジトリ外のPi上の安全な場所**に保存します。例：`/etc/chatsite/firebase-service-account.json`。このJSONをGitHubにコミットしないでください。
+Firebase Consoleでプロジェクトを作り、Authentication → Sign-in methodでGoogleを有効化します。Webアプリ設定の値を index.html 内の FIREBASE_CONFIG に入れます。アクセスするホスト名（ドメインまたはIP）をFirebase Authenticationの承認済みドメインに登録してください。Firebase AuthenticationのWebログインではHTTPSが必要です（localhostを除く）。
+
+Firebaseサービスアカウントの秘密鍵JSONはPi上のみに置き、GitHubへ絶対にコミットしないでください。例：
 
 ```bash
 sudo mkdir -p /etc/chatsite
 sudo chown "$USER":"$USER" /etc/chatsite
-# サービスアカウントJSONを安全な方法で /etc/chatsite/firebase-service-account.json に配置
+# 安全な方法でJSONを /etc/chatsite/firebase-service-account.json に配置
 chmod 600 /etc/chatsite/firebase-service-account.json
 ```
 
-### 2. Google Drive写真アップロード（任意）
+### 2. Safariなどを閉じていても通知を受け取る設定
 
-1. [Google Cloud Console](https://console.cloud.google.com/)でGoogle Drive APIを有効化します。
-2. OAuth同意画面を設定し、Webアプリ用OAuthクライアントIDを作成します。
-3. Authorized JavaScript originsに、Piのサイトのoriginを登録します。例：`https://chat.example.com`（パスや末尾のスラッシュは含めません）。
-4. `index.html` の `GOOGLE_DRIVE_CLIENT_ID` をOAuthクライアントIDに置き換えます。
-
-写真は「リンクを知っている全員が閲覧可能」に設定されます。URLを知る人が写真を閲覧できるため、非公開の画像を送らないでください。写真機能を使わない場合は未設定でもテキストチャットを利用できます。
-
-### 3. サーバーを起動
+Web Pushはブラウザの通知許可とHTTPSが必要です。VAPIDキーをPi上で生成します：
 
 ```bash
+npx web-push generate-vapid-keys
+```
+
+表示されたPublic KeyとPrivate Keyは同じペアを使います。Public KeyはサーバーAPIから配布します。以下の環境変数を設定します：
+
+- VAPID_PUBLIC_KEY：生成したPublic Key
+- VAPID_PRIVATE_KEY：生成したPrivate Key（秘密。GitHubへ保存しない）
+- VAPID_SUBJECT：例 mailto:管理者のメールアドレス
+
+VAPIDキーは一度生成したら同じものを使い続けてください。変更すると既存の通知購読を作り直す必要があります。HTTPSでサイトにアクセスしてGoogleログイン後、「通知を有効化」を押し、ブラウザの通知許可を認めます。購読情報はPiに保存され、他のユーザーが投稿すると本文を含めず「新しいメッセージが届きました」という通知を送ります。
+
+**Safariについて**
+- macOSのSafariでは通知を許可し、サイトの通知をシステム設定でも許可してください。
+- iPhone/iPadのSafariでは、Web Push対応OS（iOS/iPadOS 16.4以降）でサイトをホーム画面に追加し、そのホーム画面アイコンから開いて通知を有効化する必要があります。通常のSafariタブを閉じた場合の動作はOS・インストール状態・通知設定に依存します。
+- OSの集中モード、バッテリー設定、ネット接続、通知許可の状態によっては届かない場合があります。端末が完全に電源OFF・オフラインの間は即時配信できません。
+- HTTPSが必要です。家庭内のIPアドレスへHTTPで開くだけではプッシュ通知が使えない場合があります。外部公開する場合はHTTPS付きドメインや安全なトンネルを設定してください。
+
+### 3. 3010ポートで起動
+
+```bash
+export PORT=3010
 export GOOGLE_APPLICATION_CREDENTIALS=/etc/chatsite/firebase-service-account.json
 export DATA_DIR=/var/lib/chatsite
+export VAPID_PUBLIC_KEY='生成したPublic Key'
+export VAPID_PRIVATE_KEY='生成したPrivate Key'
+export VAPID_SUBJECT='mailto:管理者のメールアドレス'
 npm start
 ```
 
-`DATA_DIR` はメッセージファイルの保存先です。永続保存のため、PiのSDカードや外付けSSD上の適切なディレクトリを指定してください。デフォルトはリポジトリ内の `data/` です。
+ブラウザで http://ラズパイのIPアドレス:3010 を開きます。同じWi-Fi内の確認には使えますが、Googleログインとプッシュ通知を利用する本番公開ではHTTPSを設定してください。ポート3010をインターネットへ直接公開するより、HTTPSリバースプロキシまたは安全なトンネルを推奨します。
 
-ブラウザで `http://ラズパイのIPアドレス:3000` を開きます。同じWi-Fi内からのアクセスは通常これで可能です。インターネット越しに公開するには、HTTPSとドメイン、ルーター設定またはトンネルサービスなどの追加設定が必要です。Node.jsのポート3000をそのままインターネットへ直接公開する運用は推奨しません。
+## systemdで常時起動
 
-### 4. 再起動後も自動起動（systemd）
-
-`/etc/systemd/system/chatsite.service` を作成します。ユーザー名と配置先は実際の環境に合わせてください。
+/ etc / systemd / system / chatsite.service を作成し、実際のLinuxユーザー名とリポジトリの配置先を合わせます：
 
 ```ini
 [Unit]
@@ -71,9 +84,12 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/chatsite
 Environment=NODE_ENV=production
-Environment=PORT=3000
+Environment=PORT=3010
 Environment=DATA_DIR=/var/lib/chatsite
 Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/chatsite/firebase-service-account.json
+Environment=VAPID_PUBLIC_KEY=ここにPublicKey
+Environment=VAPID_PRIVATE_KEY=ここにPrivateKey
+Environment=VAPID_SUBJECT=mailto:管理者のメールアドレス
 ExecStart=/usr/bin/node /home/pi/chatsite/server.js
 Restart=on-failure
 RestartSec=5
@@ -85,9 +101,10 @@ ReadWritePaths=/var/lib/chatsite
 WantedBy=multi-user.target
 ```
 
-保存ディレクトリをサービスユーザーに許可してから有効化します。
+VAPID Private Keyは秘密情報です。設定ファイルの権限を制限します：
 
 ```bash
+sudo chmod 600 /etc/systemd/system/chatsite.service
 sudo mkdir -p /var/lib/chatsite
 sudo chown pi:pi /var/lib/chatsite
 sudo systemctl daemon-reload
@@ -95,22 +112,21 @@ sudo systemctl enable --now chatsite
 sudo systemctl status chatsite
 ```
 
-## メッセージ保存とバックアップ
+## GitHub更新をPiに自動反映
 
-- 本文、送信者ID、表示名、日時、写真URLをPiの `DATA_DIR/messages.jsonl` に追記します。
-- 最新200件を画面に表示し、画面は3秒ごとにサーバーを確認します。
-- `data/` はGit管理対象外です。Piの故障やSDカード破損に備え、`messages.jsonl` を別のストレージに定期バックアップしてください。
-- 本構成は小規模な個人チャット向けです。多数の同時投稿や大規模運用ではSQLite/PostgreSQLなどのDBを検討してください。
-
-## 更新
-
-GitHub上のソースをPiで更新する場合：
+リポジトリには scripts/update.sh、chatsite-update.service、chatsite-update.timer を用意しています。Pi側でGitHubのmainブランチを毎分確認し、更新があると fast-forward更新、npm install、Node.jsサービス再起動を行う方式です。GitHubにpushした直後に反映されるとは限らず、通常は次の確認まで最大約1分＋インストール時間かかります。Piがインターネットに接続され、timerが有効である必要があります。
 
 ```bash
-cd /home/pi/chatsite
-git pull
-npm install
-sudo systemctl restart chatsite
+sudo cp chatsite-update.service /etc/systemd/system/
+sudo cp chatsite-update.timer /etc/systemd/system/
+sudo chmod +x /home/pi/chatsite/scripts/update.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now chatsite-update.timer
+systemctl list-timers chatsite-update.timer
 ```
 
-この構成ではGitHub Pagesを配信元として使いません。GitHubはソースコード管理用で、実際のサイトはPiから配信します。
+サービスファイルとスクリプトの既定パスは /home/pi/chatsite です。別の場所にcloneした場合は両方を変更してください。更新スクリプトはroot権限で実行するため、GitHubから取得するコードは自分が管理するリポジトリのものに限定し、変更内容を確認してください。自動更新はPi上のソースコードのみを更新します。/var/lib/chatsite のメッセージや通知購読データはGit管理外なので更新で上書きしません。
+
+## バックアップ
+
+/var/lib/chatsite/messages.jsonl と /var/lib/chatsite/push-subscriptions.json を定期バックアップしてください。SDカード故障に備え、別ドライブにも保存することを推奨します。小規模な個人利用向けの構成です。
