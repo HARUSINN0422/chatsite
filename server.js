@@ -7,6 +7,7 @@ const { promisify } = require("util");
 const { execFile } = require("child_process");
 const multer = require("multer");
 const webpush = require("web-push");
+const sharp = require("sharp");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3010);
@@ -21,7 +22,8 @@ const READS_FILE = path.join(DATA_DIR, "read-receipts.json");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const MAX_TEXT = 4000;
 const MAX_MESSAGES = 200;
-const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+const PHOTO_MAX_BYTES = 256 * 1024;
+const PHOTO_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 const PHOTO_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTO_UPDATE_INTERVAL = 60 * 1000;
@@ -170,11 +172,8 @@ const allowedImageTypes = {
   "image/webp": ".webp", "image/avif": ".avif"
 };
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, PHOTO_DIR),
-    filename: (_req, file, cb) => cb(null, crypto.randomUUID() + allowedImageTypes[file.mimetype])
-  }),
-  limits: { fileSize: PHOTO_MAX_BYTES, files: 1 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PHOTO_UPLOAD_MAX_BYTES, files: 1 },
   fileFilter: (_req, file, cb) => {
     if (!allowedImageTypes[file.mimetype]) return cb(new Error("JPEG、PNG、GIF、WebP、AVIF形式の画像を選択してください"));
     cb(null, true);
@@ -327,6 +326,19 @@ app.post("/api/conversations/group", requireLogin, async (req, res, next) => {
     res.status(201).json({ conversation: { id: conversation.id } });
   } catch (e) { next(e); }
 });
+app.get("/api/conversations/:id/members", requireLogin, async (req, res, next) => {
+  try {
+    const conversations = await readConversations();
+    const conversation = conversations[req.params.id];
+    if (!conversation || conversation.type !== "group" || !conversation.memberUids.includes(req.user.uid))
+      return res.status(404).json({ error: "グループが見つからないか、参加権限がありません" });
+    const members = conversation.memberUids.map(uid => ({
+      uid,
+      username: conversation.memberNames[uid] || "ユーザー"
+    }));
+    res.set("Cache-Control", "no-store").json({ members });
+  } catch (e) { next(e); }
+});
 app.post("/api/conversations/:id/members", requireLogin, async (req, res, next) => {
   try {
     const submitted = Array.isArray(req.body?.memberUids) ? req.body.memberUids : [];
@@ -369,10 +381,30 @@ app.get("/api/conversations/:id/messages", requireLogin, async (req, res, next) 
   } catch (e) { next(e); }
 });
 app.post("/api/photos", requireLogin, (req, res, next) => {
-  upload.single("photo")(req, res, err => {
+  upload.single("photo")(req, res, async err => {
     if (err) return res.status(400).json({ error: err.code === "LIMIT_FILE_SIZE" ? "写真は10MB以下にしてください" : err.message });
     if (!req.file) return res.status(400).json({ error: "写真ファイルを選択してください" });
-    res.status(201).json({ imageUrl: "/api/photos/" + req.file.filename });
+    try {
+      let compressed = null;
+      const widths = [1600, 1400, 1200, 1000, 800, 640, 480, 360, 240];
+      const qualities = [82, 72, 62, 52, 42, 32, 24];
+      for (const width of widths) {
+        for (const quality of qualities) {
+          compressed = await sharp(req.file.buffer, { animated: false })
+            .rotate()
+            .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality, mozjpeg: true })
+            .toBuffer();
+          if (compressed.length <= PHOTO_MAX_BYTES) break;
+        }
+        if (compressed && compressed.length <= PHOTO_MAX_BYTES) break;
+      }
+      if (!compressed || compressed.length > PHOTO_MAX_BYTES)
+        return res.status(400).json({ error: "写真を256KB以下に圧縮できませんでした。別の画像を選択してください" });
+      const filename = crypto.randomUUID() + ".jpg";
+      await fsp.writeFile(path.join(PHOTO_DIR, filename), compressed, { flag: "wx", mode: 0o600 });
+      res.status(201).json({ imageUrl: "/api/photos/" + filename, size: compressed.length });
+    } catch (e) { next(e); }
   });
 });
 app.get("/api/photos/:filename", requireLogin, async (req, res, next) => {
