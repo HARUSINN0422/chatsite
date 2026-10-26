@@ -1,0 +1,10 @@
+{
+  "name": "ChatSite",
+  "short_name": "ChatSite",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#111827",
+  "description": "Googleアカウントで使える軽量チャット",
+  "icons": []
+}
