@@ -213,7 +213,7 @@ app.post("/api/push/subscribe", requireLogin, async (req, res, next) => {
       return res.status(400).json({ error: "通知購読情報が無効です" });
     const data = await readSubscriptions();
     const prefixHeader = req.headers["x-forwarded-prefix"];
-    const basePath = typeof prefixHeader === "string" && /^\/[A-Za-z0-9/_-]*$/.test(prefixHeader) ? (prefixHeader.endsWith("/") ? prefixHeader : prefixHeader + "/") : (process.env.APP_BASE_PATH || "/");
+    const basePath = typeof prefixHeader === "string" && /^\/[A-Za-z0-9/_-]*$/.test(prefixHeader) ? (prefixHeader.endsWith("/") ? prefixHeader : prefixHeader + "/") : (process.env.APP_BASE_PATH || undefined);
     data[sub.endpoint] = { uid: req.user.uid, subscription: sub, basePath, updatedAt: new Date().toISOString() };
     await writeSubscriptions(data);
     res.status(201).json({ ok: true });
