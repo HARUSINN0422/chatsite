@@ -62,7 +62,7 @@ app.post("/api/messages", requireLogin, async (req, res, next) => {
     res.status(201).json({ message });
   } catch (e) { next(e); }
 });
-app.use(express.static(__dirname, { index: "index.html", etag: true, maxAge: "5m" }));
+app.use((req, res, next) => {\n  if (req.path === "/data" || req.path.startsWith("/data/")) return res.status(404).end();\n  next();\n});\napp.use(express.static(__dirname, { index: "index.html", etag: true, maxAge: "5m" }));
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ error: "サーバー内部エラー" });
