@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "chatsite-shell-";
-const CACHE_NAME = CACHE_PREFIX + "v1";
+const CACHE_NAME = CACHE_PREFIX + "v2";
 const SHELL = ["./", "./index.html", "./manifest.json"];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -9,7 +9,7 @@ self.addEventListener("activate", event => {
 });
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
-  if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
+  if (event.request.method !== "GET" || url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
   event.respondWith(fetch(event.request).then(response => {
     if (response.ok && (url.pathname.endsWith("/") || /\.(html|js|json|css)$/.test(url.pathname))) {
       const copy = response.clone(); caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
