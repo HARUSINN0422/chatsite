@@ -18,6 +18,7 @@ const MESSAGES_FILE = path.join(DATA_DIR, "messages.jsonl");
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, "push-subscriptions.json");
 const CONVERSATIONS_FILE = path.join(DATA_DIR, "conversations.json");
 const READS_FILE = path.join(DATA_DIR, "read-receipts.json");
+const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const MAX_TEXT = 4000;
 const MAX_MESSAGES = 200;
 const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
@@ -84,6 +85,17 @@ async function writeReceipts(data) {
   await fsp.writeFile(tmp, JSON.stringify(data), { mode: 0o600 });
   await fsp.rename(tmp, READS_FILE);
 }
+async function readSessions() {
+  await ensureDataDirs();
+  try { return JSON.parse(await fsp.readFile(SESSIONS_FILE, "utf8")); }
+  catch (e) { if (e.code === "ENOENT") return {}; throw e; }
+}
+async function writeSessions(data) {
+  await ensureDataDirs();
+  const tmp = SESSIONS_FILE + ".tmp";
+  await fsp.writeFile(tmp, JSON.stringify(data), { mode: 0o600 });
+  await fsp.rename(tmp, SESSIONS_FILE);
+}
 async function appendMessage(message) {
   writeQueue = writeQueue.then(async () => {
     await ensureDataDirs();
@@ -108,7 +120,11 @@ function getSession(req) {
   if (!match) return null;
   const session = sessions.get(match[1]);
   if (!session) return null;
-  if (session.expiresAt <= Date.now()) { sessions.delete(match[1]); return null; }
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(match[1]);
+    writeSessions(Object.fromEntries(sessions)).catch(e => console.error("[Session] セッション保存に失敗しました:", e.message));
+    return null;
+  }
   return { token: match[1], ...session };
 }
 function setSessionCookie(req, res, token) {
@@ -182,6 +198,7 @@ app.post("/api/register", async (req, res, next) => {
     await writeUsers(users);
     const token = crypto.randomBytes(32).toString("hex");
     sessions.set(token, { uid, username, expiresAt: Date.now() + SESSION_TTL_MS });
+    await writeSessions(Object.fromEntries(sessions));
     setSessionCookie(req, res, token);
     res.status(201).json({ user: { uid, username } });
   } catch (e) { next(e); }
@@ -201,16 +218,20 @@ app.post("/api/login", async (req, res, next) => {
       return res.status(401).json({ error: "ユーザー名またはパスワードが違います" });
     const token = crypto.randomBytes(32).toString("hex");
     sessions.set(token, { uid: user.uid, username: user.username, expiresAt: Date.now() + SESSION_TTL_MS });
+    await writeSessions(Object.fromEntries(sessions));
     setSessionCookie(req, res, token);
     res.json({ user: { uid: user.uid, username: user.username } });
   } catch (e) { next(e); }
 });
 app.get("/api/me", requireLogin, (req, res) => res.json({ user: req.user }));
-app.post("/api/logout", (req, res) => {
-  const session = getSession(req);
-  if (session) sessions.delete(session.token);
-  clearSessionCookie(req, res);
-  res.json({ ok: true });
+app.post("/api/logout", async (req, res, next) => {
+  try {
+    const session = getSession(req);
+    if (session) sessions.delete(session.token);
+    await writeSessions(Object.fromEntries(sessions));
+    clearSessionCookie(req, res);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 });
 
 app.get("/api/push/public-key", (_req, res) => {
@@ -444,6 +465,14 @@ function checkForUpdates() {
 
 async function start() {
   await ensureDataDirs();
+  const savedSessions = await readSessions();
+  const now = Date.now();
+  for (const [token, session] of Object.entries(savedSessions)) {
+    if (/^[a-f0-9]{64}$/.test(token) && session && typeof session.uid === "string" && typeof session.username === "string" && Number.isFinite(session.expiresAt) && session.expiresAt > now) {
+      sessions.set(token, session);
+    }
+  }
+  await writeSessions(Object.fromEntries(sessions));
   await cleanupOldPhotos();
   setInterval(cleanupOldPhotos, 60 * 60 * 1000);
   app.listen(PORT, HOST, () => {
