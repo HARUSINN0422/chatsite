@@ -1,0 +1,17 @@
+{
+  "name": "chatsite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Raspberry Pi Node.js chat website with local message storage",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "firebase-admin": "^13.0.2"
+  }
+}
