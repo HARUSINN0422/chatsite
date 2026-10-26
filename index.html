@@ -14,7 +14,7 @@
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
-<header><h1>ChatSite</h1><div class="top-actions"><img id="avatar" class="avatar hidden" alt=""><span id="userLabel" class="small muted"></span><button id="signOut" class="secondary hidden">ログアウト</button></div></header>
+<header><h1>ChatSite</h1><div class="top-actions"><img id="avatar" class="avatar hidden" alt=""><span id="userLabel" class="small muted"></span><button id="notifyButton" class="secondary hidden" type="button">通知を有効化</button><button id="signOut" class="secondary hidden">ログアウト</button></div></header>
 <main>
 <section id="setup" class="panel center hidden"><h2>初期設定が必要です</h2><p>READMEの手順に従ってFirebaseログインとGoogle Drive写真アップロードを設定してください。</p><p class="muted small">設定未完了の状態ではログインや送信はできません。</p></section>
 <section id="login" class="panel center hidden"><h2>チャットにログイン</h2><p class="muted">Googleアカウントでログインしてメッセージを送受信できます。</p><button id="signIn">Googleでログイン</button><p id="loginError" class="status"></p></section>
@@ -64,8 +64,40 @@ function showSignedIn(user){
  currentUser=user;$("login").classList.add("hidden");$("setup").classList.add("hidden");$("chat").classList.remove("hidden");$("composer").classList.remove("hidden");
  $("userLabel").textContent=user.displayName||user.email||"";$("avatar").src=user.photoURL||"";$("avatar").classList.toggle("hidden",!user.photoURL);$("signOut").classList.remove("hidden");
  loadMessages();if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(loadMessages,3000);
+ $("notifyButton").classList.remove("hidden");
 }
 function signIn(){auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e=>$("loginError").textContent="ログインできません: "+e.message)}
+function urlBase64ToUint8Array(base64String){
+ const padding="=".repeat((4-base64String.length%4)%4);
+ const raw=atob((base64String+padding).replace(/-/g,"+").replace(/_/g,"/"));
+ return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));
+}
+async function enableNotifications(){
+ const button=$("notifyButton");button.disabled=true;
+ try{
+  if(!("serviceWorker" in navigator)||!("PushManager" in window)||!("Notification" in window))throw new Error("このブラウザはプッシュ通知に対応していません");
+  if(!window.isSecureContext)throw new Error("通知にはHTTPS接続が必要です（localhostを除く）");
+  const permission=await Notification.requestPermission();
+  if(permission!=="granted")throw new Error("ブラウザの通知許可が必要です");
+  const keyRes=await fetch("/api/push/public-key",{cache:"no-store"});
+  const keyData=await keyRes.json();
+  if(!keyRes.ok||!keyData.publicKey)throw new Error("サーバー側のVAPID設定が未完了です");
+  const registration=await navigator.serviceWorker.register("/sw.js");
+  await navigator.serviceWorker.ready;
+  let subscription=await registration.pushManager.getSubscription();
+  if(!subscription)subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(keyData.publicKey)});
+  await api("/api/push/subscribe",{method:"POST",body:JSON.stringify({subscription:subscription.toJSON()})});
+  button.textContent="通知を有効化済み";setStatus("プッシュ通知を有効にしました");
+ }catch(e){setStatus("通知設定エラー: "+e.message)}
+ finally{button.disabled=false}
+}
+async function disableNotifications(){
+ try{
+  const registration=await navigator.serviceWorker.getRegistration("/sw.js");
+  const sub=registration&&await registration.pushManager.getSubscription();
+  if(sub){await api("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint:sub.endpoint})});await sub.unsubscribe()}
+ }catch(e){console.error(e)}
+}
 function getDriveToken(){
  return new Promise((resolve,reject)=>{
   if(!GOOGLE_DRIVE_CLIENT_ID||GOOGLE_DRIVE_CLIENT_ID.startsWith("YOUR_")){reject(new Error("写真を送るにはREADMEのGoogle Drive設定が必要です"));return}
@@ -87,7 +119,8 @@ async function uploadPhoto(file){
  return "https://drive.google.com/uc?export=view&id="+encodeURIComponent(item.id);
 }
 $("signIn").addEventListener("click",signIn);
-$("signOut").addEventListener("click",()=>auth.signOut());
+$("notifyButton").addEventListener("click",enableNotifications);
+$("signOut").addEventListener("click",async()=>{await disableNotifications();auth.signOut()});
 $("photo").addEventListener("change",e=>{selectedPhoto=e.target.files[0]||null;$("photoName").textContent=selectedPhoto?selectedPhoto.name+" ("+Math.ceil(selectedPhoto.size/1024)+" KB)":""});
 $("composer").addEventListener("submit",async e=>{
  e.preventDefault();if(!currentUser)return;
@@ -100,7 +133,7 @@ $("composer").addEventListener("submit",async e=>{
 });
 if(!configured){$("setup").classList.remove("hidden")}else{
  try{firebase.initializeApp(FIREBASE_CONFIG);auth=firebase.auth();
-  auth.onAuthStateChanged(user=>{if(user)showSignedIn(user);else{$("chat").classList.add("hidden");$("composer").classList.add("hidden");$("login").classList.remove("hidden");$("signOut").classList.add("hidden");$("userLabel").textContent="";if(pollTimer){clearInterval(pollTimer);pollTimer=null}}});
+  auth.onAuthStateChanged(user=>{if(user)showSignedIn(user);else{$("chat").classList.add("hidden");$("composer").classList.add("hidden");$("login").classList.remove("hidden");$("signOut").classList.add("hidden");$("notifyButton").classList.add("hidden");$("userLabel").textContent="";if(pollTimer){clearInterval(pollTimer);pollTimer=null}}});
  }catch(e){$("setup").classList.remove("hidden");$("setup").querySelector("p").textContent="初期化エラー: "+e.message}
 }
 if("serviceWorker" in navigator && location.protocol!=="file:"){window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.error))}
