@@ -127,7 +127,7 @@ async function sendNewMessagePush(senderUid, recipientUids) {
   for (const [endpoint, entry] of Object.entries(subscriptions)) {
     if (entry.uid === senderUid || !recipients.has(entry.uid)) continue;
     jobs.push(webpush.sendNotification(entry.subscription, JSON.stringify({
-      title: "ChatSite", body: "新しいメッセージが届きました", url: process.env.APP_BASE_PATH || "/"
+      title: "ChatSite", body: "新しいメッセージが届きました", url: entry.basePath || process.env.APP_BASE_PATH || "/"
     })).catch(err => {
       if (err.statusCode === 404 || err.statusCode === 410) { delete subscriptions[endpoint]; changed = true; }
       else console.error("Push delivery failed:", err.statusCode || err.message);
@@ -212,7 +212,9 @@ app.post("/api/push/subscribe", requireLogin, async (req, res, next) => {
     if (!sub || typeof sub.endpoint !== "string" || !sub.endpoint.startsWith("https://") || !sub.keys || typeof sub.keys.p256dh !== "string" || typeof sub.keys.auth !== "string")
       return res.status(400).json({ error: "通知購読情報が無効です" });
     const data = await readSubscriptions();
-    data[sub.endpoint] = { uid: req.user.uid, subscription: sub, updatedAt: new Date().toISOString() };
+    const prefixHeader = req.headers["x-forwarded-prefix"];
+    const basePath = typeof prefixHeader === "string" && /^\/[A-Za-z0-9/_-]*$/.test(prefixHeader) ? (prefixHeader.endsWith("/") ? prefixHeader : prefixHeader + "/") : (process.env.APP_BASE_PATH || "/");
+    data[sub.endpoint] = { uid: req.user.uid, subscription: sub, basePath, updatedAt: new Date().toISOString() };
     await writeSubscriptions(data);
     res.status(201).json({ ok: true });
   } catch (e) { next(e); }
