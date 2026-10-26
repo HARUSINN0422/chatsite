@@ -1,63 +1,116 @@
-# ChatSite
+# ChatSite (Raspberry Pi + Node.js)
 
-Googleアカウント認証を使った軽量な全体チャット。テキストと写真を送信でき、メッセージはCloud Firestore、写真はGoogle Driveに保存する構成です。GitHub Pagesで配信できる静的PWAです。
+Googleアカウントでログインする全体チャットです。**Webサイトの配信とテキストメッセージの保存はRaspberry Pi上のNode.jsサーバーが担当**します。写真はGoogle Driveに保存し、メッセージには写真URLを保存します。
 
-## 1. GitHub Pagesを有効化
+## 構成
 
-GitHubの `HARUSINN0422/chatsite` → **Settings → Pages** で、Build and deployment を **Deploy from a branch**、Branch を **main / (root)** に設定して保存します。公開URLは通常 `https://harusinn0422.github.io/chatsite/` です。
+- `server.js`: Node.js/ExpressのWebサーバー、API、Firebase IDトークン検証
+- `data/messages.jsonl`: チャット本文の保存先（実行時に自動作成。Gitには含めません）
+- `index.html`: チャット画面
+- Firebase Authentication: Googleアカウントでのログインのみ。本文保存には使いません
+- Google Drive: 写真本体の保存先
 
-## 2. Firebase設定
+## Raspberry Piで起動する
 
-1. [Firebase Console](https://console.firebase.google.com/)でプロジェクトを作成します。
-2. Authentication → Sign-in method で **Google** を有効にします。
-3. Authentication → Settings → Authorized domains に `harusinn0422.github.io` を追加します。
-4. Firestore Databaseを作成します。
-5. プロジェクト設定 → アプリを追加 → Webアプリから設定値を取得します。
-6. `index.html` 内の `FIREBASE_CONFIG` の `YOUR_...` を実際の設定値に置き換えます。Firebase Web設定値は秘密鍵ではありませんが、Firestoreのセキュリティルールを必ず設定してください。
+Node.js 18以降をインストールし、リポジトリをPiにcloneしてください。
 
-推奨Firestoreルール（ログインユーザー全員が全体チャットを読み書きできる公開チャット用の最小例）:
-
-```text
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /messages/{messageId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.text is string
-        && request.resource.data.text.size() <= 4000
-        && request.resource.data.imageUrl is string;
-      allow update, delete: if false;
-    }
-  }
-}
+```bash
+git clone https://github.com/HARUSINN0422/chatsite.git
+cd chatsite
+npm install
 ```
 
-Firebaseの設定だけでは不十分です。Googleログインを有効化し、Firestoreを作成して上記ルールを適用してください。
+### 1. Firebaseログインを設定
 
-## 3. Google Drive写真アップロード設定
+1. [Firebase Console](https://console.firebase.google.com/)でプロジェクトを作成します。
+2. Authentication → Sign-in method で Google を有効化します。
+3. Authenticationの設定で、実際にアクセスするドメインを承認済みドメインに追加します。
+4. プロジェクト設定からWebアプリの設定を取得し、`index.html` の `FIREBASE_CONFIG` の `YOUR_...` を置き換えます。
+5. Firebaseプロジェクト設定からサービスアカウントの秘密鍵JSONを発行し、**リポジトリ外のPi上の安全な場所**に保存します。例：`/etc/chatsite/firebase-service-account.json`。このJSONをGitHubにコミットしないでください。
 
-1. [Google Cloud Console](https://console.cloud.google.com/)でFirebaseと同じGoogle Cloudプロジェクトを選択します。
-2. **Google Drive API**を有効にします。
-3. Google Auth Platform / OAuth consent screenを設定し、必要な場合はテストユーザーを追加します。
-4. Credentials → Create Credentials → **OAuth client ID** → **Web application**を作成します。
-5. Authorized JavaScript origins に `https://harusinn0422.github.io` を追加します（パス `/chatsite/` は含めません）。
-6. `index.html` の `GOOGLE_DRIVE_CLIENT_ID` をOAuthクライアントIDに置き換えます。
-7. 初めて写真を送る際にGoogle Driveへのアクセスを許可します。
+```bash
+sudo mkdir -p /etc/chatsite
+sudo chown "$USER":"$USER" /etc/chatsite
+# サービスアカウントJSONを安全な方法で /etc/chatsite/firebase-service-account.json に配置
+chmod 600 /etc/chatsite/firebase-service-account.json
+```
 
-写真送信時、Drive APIでアップロードし、リンクを知っている全員が閲覧できる権限を付与します。**そのリンクを知る人は写真を見られるため、個人情報や非公開の写真は送信しないでください。** Google Workspace管理者設定によっては一般公開の共有が禁止され、共有設定に失敗することがあります。
+### 2. Google Drive写真アップロード（任意）
 
-## 4. 自動更新とオフラインキャッシュ
+1. [Google Cloud Console](https://console.cloud.google.com/)でGoogle Drive APIを有効化します。
+2. OAuth同意画面を設定し、Webアプリ用OAuthクライアントIDを作成します。
+3. Authorized JavaScript originsに、Piのサイトのoriginを登録します。例：`https://chat.example.com`（パスや末尾のスラッシュは含めません）。
+4. `index.html` の `GOOGLE_DRIVE_CLIENT_ID` をOAuthクライアントIDに置き換えます。
 
-Service Workerがサイトのファイルをキャッシュします。オンライン時はGitHub Pagesから最新ファイルを確認し、ネット接続がない場合はキャッシュ済みのページを表示します。Service Workerの更新はブラウザが検出して適用します。ブラウザの仕様上、更新が全端末に即時反映される保証はなく、開いているページでは再読み込みが必要な場合があります。初回読み込みにはインターネット接続が必要です。
+写真は「リンクを知っている全員が閲覧可能」に設定されます。URLを知る人が写真を閲覧できるため、非公開の画像を送らないでください。写真機能を使わない場合は未設定でもテキストチャットを利用できます。
 
-GitHub Pagesへの反映には数分かかることがあります。古い版が表示される場合は一度再読み込みしてください。
+### 3. サーバーを起動
 
-## 制限事項
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/etc/chatsite/firebase-service-account.json
+export DATA_DIR=/var/lib/chatsite
+npm start
+```
 
-- チャットは「全体チャット」1部屋です。メッセージは最新200件を表示します。
-- GitHub Pagesはアプリ配信用です。メッセージや写真そのものをGitHubリポジトリには保存しません。
-- 写真ファイル本体はGoogle Drive、メッセージはFirestoreに保存するため、配布ファイルを軽量に保てます。
-- OAuth同意画面が未公開の場合、登録済みテストユーザーだけが写真アップロードを使える場合があります。
-- 本番運用では不正利用対策、Firestore App Check、レート制限、プライバシー表示も検討してください。
+`DATA_DIR` はメッセージファイルの保存先です。永続保存のため、PiのSDカードや外付けSSD上の適切なディレクトリを指定してください。デフォルトはリポジトリ内の `data/` です。
+
+ブラウザで `http://ラズパイのIPアドレス:3000` を開きます。同じWi-Fi内からのアクセスは通常これで可能です。インターネット越しに公開するには、HTTPSとドメイン、ルーター設定またはトンネルサービスなどの追加設定が必要です。Node.jsのポート3000をそのままインターネットへ直接公開する運用は推奨しません。
+
+### 4. 再起動後も自動起動（systemd）
+
+`/etc/systemd/system/chatsite.service` を作成します。ユーザー名と配置先は実際の環境に合わせてください。
+
+```ini
+[Unit]
+Description=ChatSite Node.js server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/chatsite
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=DATA_DIR=/var/lib/chatsite
+Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/chatsite/firebase-service-account.json
+ExecStart=/usr/bin/node /home/pi/chatsite/server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/chatsite
+
+[Install]
+WantedBy=multi-user.target
+```
+
+保存ディレクトリをサービスユーザーに許可してから有効化します。
+
+```bash
+sudo mkdir -p /var/lib/chatsite
+sudo chown pi:pi /var/lib/chatsite
+sudo systemctl daemon-reload
+sudo systemctl enable --now chatsite
+sudo systemctl status chatsite
+```
+
+## メッセージ保存とバックアップ
+
+- 本文、送信者ID、表示名、日時、写真URLをPiの `DATA_DIR/messages.jsonl` に追記します。
+- 最新200件を画面に表示し、画面は3秒ごとにサーバーを確認します。
+- `data/` はGit管理対象外です。Piの故障やSDカード破損に備え、`messages.jsonl` を別のストレージに定期バックアップしてください。
+- 本構成は小規模な個人チャット向けです。多数の同時投稿や大規模運用ではSQLite/PostgreSQLなどのDBを検討してください。
+
+## 更新
+
+GitHub上のソースをPiで更新する場合：
+
+```bash
+cd /home/pi/chatsite
+git pull
+npm install
+sudo systemctl restart chatsite
+```
+
+この構成ではGitHub Pagesを配信元として使いません。GitHubはソースコード管理用で、実際のサイトはPiから配信します。
