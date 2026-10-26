@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111827"><meta name="description" content="Googleアカウントで使える軽量チャット">
+<link rel="manifest" href="./manifest.json"><title>ChatSite</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--panel:#141b2e;--line:#29334c;--accent:#7c9cff;--text:#eef2ff;--muted:#9aa7c2}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,sans-serif}button,input,textarea{font:inherit}button{border:0;border-radius:10px;background:var(--accent);color:#081126;padding:10px 14px;font-weight:650;cursor:pointer}button:disabled{opacity:.45;cursor:default}.secondary{background:#26314b;color:var(--text)}header{display:flex;align-items:center;justify-content:space-between;padding:16px max(16px,calc((100% - 900px)/2));border-bottom:1px solid var(--line);background:#0d1426;position:sticky;top:0;z-index:2}header h1{font-size:19px;margin:0}main{max-width:900px;margin:auto;padding:18px 14px 120px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px}.center{text-align:center;margin:10vh auto;max-width:420px}.muted{color:var(--muted)}.hidden{display:none!important}#messages{display:flex;flex-direction:column;gap:12px;margin:16px 0}.msg{padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;max-width:min(100%,680px);overflow-wrap:anywhere}.msg.mine{align-self:flex-end;background:#1b2a4b}.meta{font-size:12px;color:var(--muted);margin-bottom:5px;display:flex;gap:8px;flex-wrap:wrap}.msg img{display:block;max-width:100%;max-height:420px;border-radius:10px;margin-top:8px}.composer{position:fixed;bottom:0;left:0;right:0;background:#0d1426;border-top:1px solid var(--line);padding:12px max(12px,calc((100% - 900px)/2));z-index:3}.compose-row{display:flex;gap:8px;align-items:flex-end}.compose-row textarea{flex:1;resize:vertical;min-height:44px;max-height:140px;background:#111a2e;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px}.small{font-size:12px}.top-actions{display:flex;gap:8px;align-items:center}.avatar{width:30px;height:30px;border-radius:50%;object-fit:cover}.status{margin:10px 0;color:var(--muted);font-size:13px}a{color:#9db5ff}
+</style>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+<header><h1>ChatSite</h1><div class="top-actions"><img id="avatar" class="avatar hidden" alt=""><span id="userLabel" class="small muted"></span><button id="signOut" class="secondary hidden">ログアウト</button></div></header>
+<main>
+<section id="setup" class="panel center hidden"><h2>初期設定が必要です</h2><p>READMEの手順に従ってFirebaseとGoogle Driveの設定値を登録してください。</p><p class="muted small">設定未完了の状態ではログインや送信はできません。</p></section>
+<section id="login" class="panel center hidden"><h2>チャットにログイン</h2><p class="muted">Googleアカウントでログインしてメッセージを送受信できます。</p><button id="signIn">Googleでログイン</button><p id="loginError" class="status"></p></section>
+<section id="chat" class="hidden"><div class="panel"><strong>全体チャット</strong><div class="muted small">テキストと写真を送信できます。写真はGoogle Driveに保存し、閲覧用リンクを共有します。</div></div><div id="status" class="status">接続中…</div><div id="messages" aria-live="polite"></div></section>
+</main>
+<form id="composer" class="composer hidden"><div class="compose-row"><label for="photo" class="secondary" style="padding:10px 12px;border-radius:10px;cursor:pointer;white-space:nowrap">写真<input id="photo" type="file" accept="image/*" hidden></label><textarea id="messageText" placeholder="メッセージを書く…" maxlength="4000" aria-label="メッセージ"></textarea><button id="send" type="submit">送信</button></div><div id="photoName" class="small muted"></div><div class="small muted">写真はアップロード時に「リンクを知っている全員が閲覧可能」に設定されます。</div></form>
+<script>
+/* Firebase Consoleで取得した設定値をここに入力してください。 */
+const FIREBASE_CONFIG = {
+  apiKey: "YOUR_FIREBASE_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  appId: "YOUR_FIREBASE_APP_ID"
+};
+/* Google Cloud Consoleで作成したOAuth 2.0ウェブクライアントID */
+const GOOGLE_DRIVE_CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const configured = !Object.values(FIREBASE_CONFIG).some(v=>String(v).startsWith("YOUR_")) && !GOOGLE_DRIVE_CLIENT_ID.startsWith("YOUR_");
+const $ = id => document.getElementById(id);
+let auth, db, currentUser, unsubscribe, driveTokenClient, driveAccessToken, selectedPhoto;
+const safeText = s => String(s ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function setStatus(s){$("status").textContent=s}
+function showSignedIn(user){
+ currentUser=user;$("login").classList.add("hidden");$("setup").classList.add("hidden");$("chat").classList.remove("hidden");$("composer").classList.remove("hidden");
+ $("userLabel").textContent=user.displayName||user.email||"";$("avatar").src=user.photoURL||"";$("avatar").classList.toggle("hidden",!user.photoURL);$("signOut").classList.remove("hidden");
+ if(unsubscribe)unsubscribe();
+ unsubscribe=db.collection("messages").orderBy("createdAt","asc").limitToLast(200).onSnapshot(snap=>{
+  $("messages").replaceChildren();
+  snap.forEach(doc=>{const m=doc.data(),el=document.createElement("article");el.className="msg"+(m.uid===user.uid?" mine":"");
+   const meta=document.createElement("div");meta.className="meta";meta.textContent=(m.displayName||"ユーザー")+" · "+(m.createdAt?.toDate?m.createdAt.toDate().toLocaleString():"送信中");
+   el.append(meta);if(m.text){const p=document.createElement("div");p.textContent=m.text;el.append(p)}
+   if(m.imageUrl){const a=document.createElement("a");a.href=m.imageUrl;a.target="_blank";a.rel="noopener noreferrer";const img=document.createElement("img");img.src=m.imageUrl;img.alt="共有された写真";img.loading="lazy";a.append(img);el.append(a)}
+   $("messages").append(el);
+  });window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});
+ },err=>setStatus("メッセージ読み込みエラー: "+err.message));
+}
+function signIn(){auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e=>$("loginError").textContent="ログインできません: "+e.message)}
+function getDriveToken(){
+ return new Promise((resolve,reject)=>{
+  if(!window.google?.accounts?.oauth2){reject(new Error("Google認証ライブラリを読み込めませんでした"));return}
+  driveTokenClient=google.accounts.oauth2.initTokenClient({client_id:GOOGLE_DRIVE_CLIENT_ID,scope:DRIVE_SCOPE,callback:resp=>{if(resp.error){reject(new Error(resp.error));return}driveAccessToken=resp.access_token;resolve(driveAccessToken)}});
+  driveTokenClient.requestAccessToken({prompt:"consent"});
+ });
+}
+async function uploadPhoto(file){
+ if(!file.type.startsWith("image/"))throw new Error("画像ファイルを選択してください");
+ if(file.size>10*1024*1024)throw new Error("写真は10MB以下にしてください");
+ const token=await getDriveToken();
+ const metadata={name:"ChatSite-"+Date.now()+"-"+file.name.replace(/[\\/]/g,"_"),mimeType:file.type};
+ const body=new FormData();body.append("metadata",new Blob([JSON.stringify(metadata)],{type:"application/json"}));body.append("file",file);
+ const res=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",{method:"POST",headers:{Authorization:"Bearer "+token},body});
+ if(!res.ok)throw new Error("Google Driveへのアップロードに失敗しました ("+res.status+")");
+ const item=await res.json();
+ const perm=await fetch("https://www.googleapis.com/drive/v3/files/"+encodeURIComponent(item.id)+"/permissions",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({type:"anyone",role:"reader"})});
+ if(!perm.ok)throw new Error("写真はアップロードされましたが共有設定に失敗しました。Driveで共有設定を確認してください。");
+ return "https://drive.google.com/uc?export=view&id="+encodeURIComponent(item.id);
+}
+$("signIn").addEventListener("click",signIn);
+$("signOut").addEventListener("click",()=>auth.signOut());
+$("photo").addEventListener("change",e=>{selectedPhoto=e.target.files[0]||null;$("photoName").textContent=selectedPhoto?selectedPhoto.name+" ("+Math.ceil(selectedPhoto.size/1024)+" KB)":""});
+$("composer").addEventListener("submit",async e=>{
+ e.preventDefault();if(!currentUser)return;
+ const text=$("messageText").value.trim(),photo=selectedPhoto;if(!text&&!photo)return;
+ $("send").disabled=true;
+ try{
+  let imageUrl="";if(photo){setStatus("Google Driveに写真をアップロード中…");imageUrl=await uploadPhoto(photo)}
+  await db.collection("messages").add({uid:currentUser.uid,displayName:currentUser.displayName||currentUser.email||"ユーザー",text,imageUrl,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+  $("messageText").value="";$("photo").value="";$("photoName").textContent="";selectedPhoto=null;setStatus("接続中");
+ }catch(err){setStatus("送信エラー: "+err.message)}finally{$("send").disabled=false}
+});
+if(!configured){$("setup").classList.remove("hidden")}else{
+ try{firebase.initializeApp(FIREBASE_CONFIG);auth=firebase.auth();db=firebase.firestore();
+  auth.onAuthStateChanged(user=>{if(user)showSignedIn(user);else{$("chat").classList.add("hidden");$("composer").classList.add("hidden");$("login").classList.remove("hidden");$("signOut").classList.add("hidden");$("userLabel").textContent="";if(unsubscribe){unsubscribe();unsubscribe=null}}});
+ }catch(e){$("setup").classList.remove("hidden");$("setup").querySelector("p").textContent="初期化エラー: "+e.message}
+}
+if("serviceWorker" in navigator && location.protocol!=="file:"){window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.error))}
+</script>
+</body></html>
