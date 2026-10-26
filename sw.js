@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "chatsite-shell-";
-const CACHE_NAME = CACHE_PREFIX + "v5";
+const CACHE_NAME = CACHE_PREFIX + "v6";
 const APP_BASE = new URL("./", self.registration.scope).pathname;
 const SHELL = [APP_BASE, APP_BASE + "index.html", APP_BASE + "manifest.json"];
 self.addEventListener("install", event => {
