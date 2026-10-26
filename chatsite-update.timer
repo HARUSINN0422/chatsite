@@ -1,0 +1,11 @@
+[Unit]
+Description=Check GitHub for ChatSite updates every minute
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=chatsite-update.service
+
+[Install]
+WantedBy=timers.target
