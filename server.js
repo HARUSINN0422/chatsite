@@ -1,61 +1,121 @@
 const express = require("express");
 const path = require("path");
-const fsp = require("fs").promises;
+const fs = require("fs");
+const fsp = fs.promises;
 const crypto = require("crypto");
+const { promisify } = require("util");
 const { execFile } = require("child_process");
-const admin = require("firebase-admin");
+const multer = require("multer");
 const webpush = require("web-push");
+
 const app = express();
 const PORT = Number(process.env.PORT || 3010);
 const HOST = process.env.HOST || "0.0.0.0";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
+const PHOTO_DIR = path.join(DATA_DIR, "photos");
+const USERS_FILE = path.join(DATA_DIR, "users.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.jsonl");
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, "push-subscriptions.json");
-const MAX_TEXT = 4000, MAX_MESSAGES = 200;
+const MAX_TEXT = 4000;
+const MAX_MESSAGES = 200;
+const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+const PHOTO_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTO_UPDATE_INTERVAL = 60 * 1000;
 const AUTO_UPDATE_BRANCH = "main";
+const scrypt = promisify(crypto.scrypt);
+const sessions = new Map();
 let updateInProgress = false;
+let writeQueue = Promise.resolve();
+
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
 const pushConfigured = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT);
 if (pushConfigured) webpush.setVapidDetails(process.env.VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-admin.initializeApp({ credential: admin.credential.applicationDefault() });
+
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
-let writeQueue = Promise.resolve();
+
+async function ensureDataDirs() {
+  await fsp.mkdir(DATA_DIR, { recursive: true, mode: 0o700 });
+  await fsp.mkdir(PHOTO_DIR, { recursive: true, mode: 0o700 });
+}
+async function readUsers() {
+  await ensureDataDirs();
+  try { return JSON.parse(await fsp.readFile(USERS_FILE, "utf8")); }
+  catch (e) { if (e.code === "ENOENT") return {}; throw e; }
+}
+async function writeUsers(users) {
+  await ensureDataDirs();
+  const tmp = USERS_FILE + ".tmp";
+  await fsp.writeFile(tmp, JSON.stringify(users, null, 2), { mode: 0o600 });
+  await fsp.rename(tmp, USERS_FILE);
+}
 async function readMessages() {
-  await fsp.mkdir(DATA_DIR, { recursive: true });
+  await ensureDataDirs();
   let raw;
   try { raw = await fsp.readFile(MESSAGES_FILE, "utf8"); }
   catch (e) { if (e.code === "ENOENT") return []; throw e; }
-  return raw.split("\n").filter(Boolean).slice(-MAX_MESSAGES).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+  return raw.split("\n").filter(Boolean).slice(-MAX_MESSAGES).map(line => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter(Boolean);
 }
 async function appendMessage(message) {
   writeQueue = writeQueue.then(async () => {
-    await fsp.mkdir(DATA_DIR, { recursive: true });
+    await ensureDataDirs();
     await fsp.appendFile(MESSAGES_FILE, JSON.stringify(message) + "\n", { encoding: "utf8", mode: 0o600 });
   });
   return writeQueue;
 }
 async function readSubscriptions() {
+  await ensureDataDirs();
   try { return JSON.parse(await fsp.readFile(SUBSCRIPTIONS_FILE, "utf8")); }
   catch (e) { if (e.code === "ENOENT") return {}; throw e; }
 }
 async function writeSubscriptions(data) {
-  await fsp.mkdir(DATA_DIR, { recursive: true });
+  await ensureDataDirs();
   const tmp = SUBSCRIPTIONS_FILE + ".tmp";
   await fsp.writeFile(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   await fsp.rename(tmp, SUBSCRIPTIONS_FILE);
 }
+function getSession(req) {
+  const cookie = req.headers.cookie || "";
+  const match = cookie.match(/(?:^|;\\s*)chatsite_session=([a-f0-9]{64})(?:;|$)/);
+  if (!match) return null;
+  const session = sessions.get(match[1]);
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) { sessions.delete(match[1]); return null; }
+  return { token: match[1], ...session };
+}
+function setSessionCookie(req, res, token) {
+  const secure = req.secure || req.headers["x-forwarded-proto"] === "https";
+  res.setHeader("Set-Cookie", "chatsite_session=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + Math.floor(SESSION_TTL_MS / 1000) + (secure ? "; Secure" : ""));
+}
+function clearSessionCookie(req, res) {
+  const secure = req.secure || req.headers["x-forwarded-proto"] === "https";
+  res.setHeader("Set-Cookie", "chatsite_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" + (secure ? "; Secure" : ""));
+}
+function requireLogin(req, res, next) {
+  const session = getSession(req);
+  if (!session) return res.status(401).json({ error: "ログインしてください" });
+  req.user = { uid: session.uid, username: session.username };
+  next();
+}
+function validUsername(username) {
+  return typeof username === "string" && /^[A-Za-z0-9_-]{3,24}$/.test(username);
+}
 async function sendNewMessagePush(senderUid) {
   if (!pushConfigured) return;
   let subscriptions;
-  try { subscriptions = await readSubscriptions(); } catch (e) { console.error("Push subscription read failed:", e); return; }
+  try { subscriptions = await readSubscriptions(); }
+  catch (e) { console.error("Push subscription read failed:", e); return; }
   let changed = false;
   const jobs = [];
   for (const [endpoint, entry] of Object.entries(subscriptions)) {
     if (entry.uid === senderUid) continue;
-    jobs.push(webpush.sendNotification(entry.subscription, JSON.stringify({ title: "ChatSite", body: "新しいメッセージが届きました", url: "/" })).catch(err => {
+    jobs.push(webpush.sendNotification(entry.subscription, JSON.stringify({
+      title: "ChatSite", body: "新しいメッセージが届きました", url: "/"
+    })).catch(err => {
       if (err.statusCode === 404 || err.statusCode === 410) { delete subscriptions[endpoint]; changed = true; }
       else console.error("Push delivery failed:", err.statusCode || err.message);
     }));
@@ -63,13 +123,71 @@ async function sendNewMessagePush(senderUid) {
   await Promise.allSettled(jobs);
   if (changed) await writeSubscriptions(subscriptions);
 }
-async function requireLogin(req, res, next) {
-  const match = /^Bearer (.+)$/.exec(req.get("authorization") || "");
-  if (!match) return res.status(401).json({ error: "ログインが必要です" });
-  try { req.user = await admin.auth().verifyIdToken(match[1]); next(); }
-  catch { return res.status(401).json({ error: "ログインの有効期限が切れています。再ログインしてください" }); }
-}
+
+const allowedImageTypes = {
+  "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+  "image/webp": ".webp", "image/avif": ".avif"
+};
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, PHOTO_DIR),
+    filename: (_req, file, cb) => cb(null, crypto.randomUUID() + allowedImageTypes[file.mimetype])
+  }),
+  limits: { fileSize: PHOTO_MAX_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (!allowedImageTypes[file.mimetype]) return cb(new Error("JPEG、PNG、GIF、WebP、AVIF形式の画像を選択してください"));
+    cb(null, true);
+  }
+});
+
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+app.post("/api/register", async (req, res, next) => {
+  try {
+    const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!validUsername(username)) return res.status(400).json({ error: "ユーザー名は英数字、_、- の3〜24文字にしてください" });
+    if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "パスワードは8〜128文字にしてください" });
+    const users = await readUsers();
+    const key = username.toLowerCase();
+    if (users[key]) return res.status(409).json({ error: "そのユーザー名はすでに使われています" });
+    const salt = crypto.randomBytes(16).toString("hex");
+    const hash = (await scrypt(password, salt, 64)).toString("hex");
+    const uid = crypto.randomUUID();
+    users[key] = { uid, username, salt, passwordHash: hash, createdAt: new Date().toISOString() };
+    await writeUsers(users);
+    const token = crypto.randomBytes(32).toString("hex");
+    sessions.set(token, { uid, username, expiresAt: Date.now() + SESSION_TTL_MS });
+    setSessionCookie(req, res, token);
+    res.status(201).json({ user: { uid, username } });
+  } catch (e) { next(e); }
+});
+app.post("/api/login", async (req, res, next) => {
+  try {
+    const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!validUsername(username) || !password || password.length > 128)
+      return res.status(400).json({ error: "ユーザー名またはパスワードを確認してください" });
+    const users = await readUsers();
+    const user = users[username.toLowerCase()];
+    if (!user) return res.status(401).json({ error: "ユーザー名またはパスワードが違います" });
+    const candidate = await scrypt(password, user.salt, 64);
+    const actual = Buffer.from(user.passwordHash, "hex");
+    if (actual.length !== candidate.length || !crypto.timingSafeEqual(actual, candidate))
+      return res.status(401).json({ error: "ユーザー名またはパスワードが違います" });
+    const token = crypto.randomBytes(32).toString("hex");
+    sessions.set(token, { uid: user.uid, username: user.username, expiresAt: Date.now() + SESSION_TTL_MS });
+    setSessionCookie(req, res, token);
+    res.json({ user: { uid: user.uid, username: user.username } });
+  } catch (e) { next(e); }
+});
+app.get("/api/me", requireLogin, (req, res) => res.json({ user: req.user }));
+app.post("/api/logout", (req, res) => {
+  const session = getSession(req);
+  if (session) sessions.delete(session.token);
+  clearSessionCookie(req, res);
+  res.json({ ok: true });
+});
+
 app.get("/api/push/public-key", (_req, res) => {
   if (!pushConfigured) return res.status(503).json({ error: "プッシュ通知のVAPID設定が未完了です" });
   res.set("Cache-Control", "no-store").json({ publicKey: VAPID_PUBLIC_KEY });
@@ -96,8 +214,26 @@ app.post("/api/push/unsubscribe", requireLogin, async (req, res, next) => {
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
+
 app.get("/api/messages", requireLogin, async (_req, res, next) => {
-  try { res.set("Cache-Control", "no-store"); res.json({ messages: await readMessages() }); } catch (e) { next(e); }
+  try { res.set("Cache-Control", "no-store"); res.json({ messages: await readMessages() }); }
+  catch (e) { next(e); }
+});
+app.post("/api/photos", requireLogin, (req, res, next) => {
+  upload.single("photo")(req, res, err => {
+    if (err) return res.status(400).json({ error: err.code === "LIMIT_FILE_SIZE" ? "写真は10MB以下にしてください" : err.message });
+    if (!req.file) return res.status(400).json({ error: "写真ファイルを選択してください" });
+    res.status(201).json({ imageUrl: "/api/photos/" + req.file.filename });
+  });
+});
+app.get("/api/photos/:filename", requireLogin, async (req, res, next) => {
+  const filename = req.params.filename;
+  if (!/^[a-f0-9-]+\.(jpg|png|gif|webp|avif)$/.test(filename)) return res.status(404).end();
+  try {
+    await fsp.access(path.join(PHOTO_DIR, filename));
+    res.set("Cache-Control", "private, no-store");
+    res.sendFile(path.join(PHOTO_DIR, filename), { headers: { "X-Content-Type-Options": "nosniff" } });
+  } catch (e) { if (e.code === "ENOENT") return res.status(404).json({ error: "写真は削除済みか見つかりません" }); next(e); }
 });
 app.post("/api/messages", requireLogin, async (req, res, next) => {
   try {
@@ -105,64 +241,68 @@ app.post("/api/messages", requireLogin, async (req, res, next) => {
     const text = typeof body.text === "string" ? body.text.trim() : "";
     const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
     if (text.length > MAX_TEXT) return res.status(400).json({ error: "テキストは4000文字以内にしてください" });
-    if (imageUrl && (!/^https:\/\/drive\.google\.com\//.test(imageUrl) || imageUrl.length > 2000)) return res.status(400).json({ error: "写真URLが無効です" });
+    if (imageUrl && !/^\/api\/photos\/[a-f0-9-]+\.(jpg|png|gif|webp|avif)$/.test(imageUrl))
+      return res.status(400).json({ error: "写真URLが無効です" });
     if (!text && !imageUrl) return res.status(400).json({ error: "テキストか写真を指定してください" });
-    const message = { id: crypto.randomUUID(), uid: req.user.uid, displayName: String(req.user.name || req.user.email || "ユーザー").slice(0, 100), text, imageUrl, createdAt: new Date().toISOString() };
+    const message = {
+      id: crypto.randomUUID(), uid: req.user.uid, displayName: req.user.username,
+      text, imageUrl, createdAt: new Date().toISOString()
+    };
     await appendMessage(message);
     res.status(201).json({ message });
     sendNewMessagePush(req.user.uid).catch(e => console.error("Push notification failed:", e));
   } catch (e) { next(e); }
 });
-app.use((req, res, next) => { if (req.path === "/data" || req.path.startsWith("/data/")) return res.status(404).end(); next(); });
+
+async function cleanupOldPhotos() {
+  try {
+    await ensureDataDirs();
+    const cutoff = Date.now() - PHOTO_TTL_MS;
+    const names = await fsp.readdir(PHOTO_DIR);
+    let deleted = 0;
+    for (const name of names) {
+      const fullPath = path.join(PHOTO_DIR, name);
+      try {
+        const stat = await fsp.stat(fullPath);
+        if (stat.isFile() && stat.mtimeMs < cutoff) {
+          await fsp.unlink(fullPath);
+          deleted++;
+        }
+      } catch (e) { if (e.code !== "ENOENT") console.error("[PhotoCleanup]", e.message); }
+    }
+    if (deleted) console.log("[PhotoCleanup] 3日以上経過した写真を" + deleted + "件削除しました。");
+  } catch (e) { console.error("[PhotoCleanup] 写真の整理に失敗しました:", e.message); }
+}
+app.use((req, res, next) => {
+  if (req.path === "/data" || req.path.startsWith("/data/")) return res.status(404).end();
+  next();
+});
 app.use(express.static(__dirname, { index: "index.html", etag: true, maxAge: "5m" }));
-app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: "サーバー内部エラー" }); });
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "サーバー内部エラー" });
+});
+
 function checkForUpdates() {
   if (updateInProgress) return;
   updateInProgress = true;
   const finish = () => { updateInProgress = false; };
-
-  execFile("git", ["fetch", "origin", AUTO_UPDATE_BRANCH], { cwd: __dirname }, (fetchError) => {
-    if (fetchError) {
-      console.error("[AutoUpdate] GitHubの確認に失敗しました:", fetchError.message);
-      finish();
-      return;
-    }
+  execFile("git", ["fetch", "origin", AUTO_UPDATE_BRANCH], { cwd: __dirname }, fetchError => {
+    if (fetchError) { console.error("[AutoUpdate] GitHubの確認に失敗しました:", fetchError.message); finish(); return; }
     execFile("git", ["rev-parse", "HEAD"], { cwd: __dirname }, (localError, localStdout) => {
-      if (localError) {
-        console.error("[AutoUpdate] 現在のコミットを取得できません:", localError.message);
-        finish();
-        return;
-      }
+      if (localError) { console.error("[AutoUpdate] 現在のコミットを取得できません:", localError.message); finish(); return; }
       execFile("git", ["rev-parse", "origin/" + AUTO_UPDATE_BRANCH], { cwd: __dirname }, (remoteError, remoteStdout) => {
-        if (remoteError) {
-          console.error("[AutoUpdate] GitHub側のコミットを取得できません:", remoteError.message);
-          finish();
-          return;
-        }
-        if (localStdout.trim() === remoteStdout.trim()) {
-          finish();
-          return;
-        }
-        console.log("[AutoUpdate] GitHubに新しい更新があります。取得します。");
+        if (remoteError) { console.error("[AutoUpdate] GitHub側のコミットを取得できません:", remoteError.message); finish(); return; }
+        if (localStdout.trim() === remoteStdout.trim()) { finish(); return; }
+        console.log("[AutoUpdate] GitHubの更新を取得します。");
         execFile("git", ["pull", "--ff-only", "origin", AUTO_UPDATE_BRANCH], { cwd: __dirname }, (pullError, pullStdout, pullStderr) => {
-          if (pullError) {
-            console.error("[AutoUpdate] git pullに失敗しました:", pullError.message);
-            if (pullStderr) console.error(pullStderr.trim());
-            finish();
-            return;
-          }
+          if (pullError) { console.error("[AutoUpdate] git pullに失敗しました:", pullError.message); if (pullStderr) console.error(pullStderr.trim()); finish(); return; }
           if (pullStdout) console.log(pullStdout.trim());
-          console.log("[AutoUpdate] npm installを実行します。");
           execFile("npm", ["install", "--omit=dev"], { cwd: __dirname }, (npmError, npmStdout, npmStderr) => {
-            if (npmError) {
-              console.error("[AutoUpdate] npm installに失敗しました:", npmError.message);
-              if (npmStderr) console.error(npmStderr.trim());
-              finish();
-              return;
-            }
+            if (npmError) { console.error("[AutoUpdate] npm installに失敗しました:", npmError.message); if (npmStderr) console.error(npmStderr.trim()); finish(); return; }
             if (npmStdout) console.log(npmStdout.trim());
             console.log("[AutoUpdate] 更新完了。Node.jsプロセスを再起動します。");
-            // systemdのRestart=on-failureに再起動を任せる。
             process.exit(75);
           });
         });
@@ -171,9 +311,16 @@ function checkForUpdates() {
   });
 }
 
-app.listen(PORT, HOST, () => {
-  console.log("ChatSite listening on http://" + HOST + ":" + PORT);
-  console.log("[AutoUpdate] GitHubの" + AUTO_UPDATE_BRANCH + "ブランチを60秒ごとに確認します。");
-  setTimeout(checkForUpdates, AUTO_UPDATE_INTERVAL);
-  setInterval(checkForUpdates, AUTO_UPDATE_INTERVAL);
-});
+async function start() {
+  await ensureDataDirs();
+  await cleanupOldPhotos();
+  setInterval(cleanupOldPhotos, 60 * 60 * 1000);
+  app.listen(PORT, HOST, () => {
+    console.log("ChatSite listening on http://" + HOST + ":" + PORT);
+    console.log("アカウントはサイト内で作成できます。写真はラズパイに保存し、3日経過後に削除します。");
+    console.log("[AutoUpdate] GitHubの" + AUTO_UPDATE_BRANCH + "ブランチを60秒ごとに確認します。");
+    setTimeout(checkForUpdates, AUTO_UPDATE_INTERVAL);
+    setInterval(checkForUpdates, AUTO_UPDATE_INTERVAL);
+  });
+}
+start().catch(err => { console.error("ChatSiteの起動に失敗しました:", err); process.exit(1); });
