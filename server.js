@@ -16,6 +16,7 @@ const PHOTO_DIR = path.join(DATA_DIR, "photos");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.jsonl");
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, "push-subscriptions.json");
+const CONVERSATIONS_FILE = path.join(DATA_DIR, "conversations.json");
 const MAX_TEXT = 4000;
 const MAX_MESSAGES = 200;
 const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
@@ -56,9 +57,20 @@ async function readMessages() {
   let raw;
   try { raw = await fsp.readFile(MESSAGES_FILE, "utf8"); }
   catch (e) { if (e.code === "ENOENT") return []; throw e; }
-  return raw.split("\n").filter(Boolean).slice(-MAX_MESSAGES).map(line => {
+  return raw.split("\n").filter(Boolean).slice(-5000).map(line => {
     try { return JSON.parse(line); } catch { return null; }
   }).filter(Boolean);
+}
+async function readConversations() {
+  await ensureDataDirs();
+  try { return JSON.parse(await fsp.readFile(CONVERSATIONS_FILE, "utf8")); }
+  catch (e) { if (e.code === "ENOENT") return {}; throw e; }
+}
+async function writeConversations(data) {
+  await ensureDataDirs();
+  const tmp = CONVERSATIONS_FILE + ".tmp";
+  await fsp.writeFile(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  await fsp.rename(tmp, CONVERSATIONS_FILE);
 }
 async function appendMessage(message) {
   writeQueue = writeQueue.then(async () => {
@@ -104,17 +116,18 @@ function requireLogin(req, res, next) {
 function validUsername(username) {
   return typeof username === "string" && /^[A-Za-z0-9_-]{3,24}$/.test(username);
 }
-async function sendNewMessagePush(senderUid) {
+async function sendNewMessagePush(senderUid, recipientUids) {
   if (!pushConfigured) return;
   let subscriptions;
   try { subscriptions = await readSubscriptions(); }
   catch (e) { console.error("Push subscription read failed:", e); return; }
   let changed = false;
   const jobs = [];
+  const recipients = new Set(recipientUids || []);
   for (const [endpoint, entry] of Object.entries(subscriptions)) {
-    if (entry.uid === senderUid) continue;
+    if (entry.uid === senderUid || !recipients.has(entry.uid)) continue;
     jobs.push(webpush.sendNotification(entry.subscription, JSON.stringify({
-      title: "ChatSite", body: "新しいメッセージが届きました", url: "/"
+      title: "ChatSite", body: "新しいメッセージが届きました", url: process.env.APP_BASE_PATH || "/"
     })).catch(err => {
       if (err.statusCode === 404 || err.statusCode === 410) { delete subscriptions[endpoint]; changed = true; }
       else console.error("Push delivery failed:", err.statusCode || err.message);
@@ -215,9 +228,78 @@ app.post("/api/push/unsubscribe", requireLogin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-app.get("/api/messages", requireLogin, async (_req, res, next) => {
-  try { res.set("Cache-Control", "no-store"); res.json({ messages: await readMessages() }); }
-  catch (e) { next(e); }
+app.get("/api/users", requireLogin, async (req, res, next) => {
+  try {
+    const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+    if (q.length < 1) return res.json({ users: [] });
+    const users = await readUsers();
+    const results = Object.values(users)
+      .filter(u => u.uid !== req.user.uid && u.username.toLowerCase().includes(q))
+      .sort((a, b) => a.username.localeCompare(b.username))
+      .slice(0, 30)
+      .map(u => ({ uid: u.uid, username: u.username }));
+    res.set("Cache-Control", "no-store").json({ users: results });
+  } catch (e) { next(e); }
+});
+app.get("/api/conversations", requireLogin, async (req, res, next) => {
+  try {
+    const [conversations, messages] = await Promise.all([readConversations(), readMessages()]);
+    const result = Object.values(conversations)
+      .filter(c => c.memberUids.includes(req.user.uid))
+      .map(c => {
+        const last = [...messages].reverse().find(m => m.conversationId === c.id);
+        const otherNames = c.memberUids.filter(uid => uid !== req.user.uid).map(uid => c.memberNames[uid] || "ユーザー");
+        return { id: c.id, type: c.type, name: c.type === "group" ? c.name : (otherNames[0] || "DM"), members: c.memberUids.length, lastMessage: last ? (last.text || (last.imageUrl ? "写真" : "")) : "", updatedAt: last ? last.createdAt : c.createdAt };
+      })
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    res.set("Cache-Control", "no-store").json({ conversations: result });
+  } catch (e) { next(e); }
+});
+app.post("/api/conversations/dm", requireLogin, async (req, res, next) => {
+  try {
+    const targetUid = typeof req.body?.uid === "string" ? req.body.uid : "";
+    if (!targetUid || targetUid === req.user.uid) return res.status(400).json({ error: "相手のユーザーを選択してください" });
+    const users = await readUsers();
+    const target = Object.values(users).find(u => u.uid === targetUid);
+    if (!target) return res.status(404).json({ error: "ユーザーが見つかりません" });
+    const conversations = await readConversations();
+    let conversation = Object.values(conversations).find(c => c.type === "dm" && c.memberUids.length === 2 && c.memberUids.includes(req.user.uid) && c.memberUids.includes(targetUid));
+    if (!conversation) {
+      const memberNames = { [req.user.uid]: req.user.username, [target.uid]: target.username };
+      conversation = { id: crypto.randomUUID(), type: "dm", name: "", memberUids: [req.user.uid, target.uid], memberNames, createdBy: req.user.uid, createdAt: new Date().toISOString() };
+      conversations[conversation.id] = conversation;
+      await writeConversations(conversations);
+    }
+    res.status(201).json({ conversation: { id: conversation.id } });
+  } catch (e) { next(e); }
+});
+app.post("/api/conversations/group", requireLogin, async (req, res, next) => {
+  try {
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    const submitted = Array.isArray(req.body?.memberUids) ? req.body.memberUids : [];
+    const memberUids = [...new Set([req.user.uid, ...submitted.filter(v => typeof v === "string")])];
+    if (!name || name.length > 60) return res.status(400).json({ error: "グループ名は1〜60文字にしてください" });
+    if (memberUids.length < 3) return res.status(400).json({ error: "グループには自分以外に2人以上選択してください" });
+    if (memberUids.length > 50) return res.status(400).json({ error: "グループは50人までです" });
+    const users = await readUsers();
+    const userByUid = new Map(Object.values(users).map(u => [u.uid, u]));
+    if (memberUids.some(uid => !userByUid.has(uid))) return res.status(400).json({ error: "存在しないユーザーが含まれています" });
+    const memberNames = Object.fromEntries(memberUids.map(uid => [uid, userByUid.get(uid).username]));
+    const conversation = { id: crypto.randomUUID(), type: "group", name, memberUids, memberNames, createdBy: req.user.uid, createdAt: new Date().toISOString() };
+    const conversations = await readConversations();
+    conversations[conversation.id] = conversation;
+    await writeConversations(conversations);
+    res.status(201).json({ conversation: { id: conversation.id } });
+  } catch (e) { next(e); }
+});
+app.get("/api/conversations/:id/messages", requireLogin, async (req, res, next) => {
+  try {
+    const conversations = await readConversations();
+    const conversation = conversations[req.params.id];
+    if (!conversation || !conversation.memberUids.includes(req.user.uid)) return res.status(404).json({ error: "会話が見つからないか、参加権限がありません" });
+    const messages = (await readMessages()).filter(m => m.conversationId === conversation.id);
+    res.set("Cache-Control", "no-store").json({ messages: messages.slice(-MAX_MESSAGES) });
+  } catch (e) { next(e); }
 });
 app.post("/api/photos", requireLogin, (req, res, next) => {
   upload.single("photo")(req, res, err => {
@@ -235,8 +317,11 @@ app.get("/api/photos/:filename", requireLogin, async (req, res, next) => {
     res.sendFile(path.join(PHOTO_DIR, filename), { headers: { "X-Content-Type-Options": "nosniff" } });
   } catch (e) { if (e.code === "ENOENT") return res.status(404).json({ error: "写真は削除済みか見つかりません" }); next(e); }
 });
-app.post("/api/messages", requireLogin, async (req, res, next) => {
+app.post("/api/conversations/:id/messages", requireLogin, async (req, res, next) => {
   try {
+    const conversations = await readConversations();
+    const conversation = conversations[req.params.id];
+    if (!conversation || !conversation.memberUids.includes(req.user.uid)) return res.status(404).json({ error: "会話が見つからないか、参加権限がありません" });
     const body = req.body || {};
     const text = typeof body.text === "string" ? body.text.trim() : "";
     const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
@@ -245,12 +330,12 @@ app.post("/api/messages", requireLogin, async (req, res, next) => {
       return res.status(400).json({ error: "写真URLが無効です" });
     if (!text && !imageUrl) return res.status(400).json({ error: "テキストか写真を指定してください" });
     const message = {
-      id: crypto.randomUUID(), uid: req.user.uid, displayName: req.user.username,
+      id: crypto.randomUUID(), conversationId: conversation.id, uid: req.user.uid, displayName: req.user.username,
       text, imageUrl, createdAt: new Date().toISOString()
     };
     await appendMessage(message);
     res.status(201).json({ message });
-    sendNewMessagePush(req.user.uid).catch(e => console.error("Push notification failed:", e));
+    sendNewMessagePush(req.user.uid, conversation.memberUids).catch(e => console.error("Push notification failed:", e));
   } catch (e) { next(e); }
 });
 
