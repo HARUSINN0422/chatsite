@@ -146,7 +146,7 @@ function requireLogin(req, res, next) {
 function validUsername(username) {
   return typeof username === "string" && /^[A-Za-z0-9_-]{3,24}$/.test(username);
 }
-async function sendNewMessagePush(senderUid, recipientUids) {
+async function sendNewMessagePush(message, recipientUids) {
   if (!pushConfigured) return;
   let subscriptions;
   try { subscriptions = await readSubscriptions(); }
@@ -154,10 +154,16 @@ async function sendNewMessagePush(senderUid, recipientUids) {
   let changed = false;
   const jobs = [];
   const recipients = new Set(recipientUids || []);
+  const senderName = String(message.displayName || "ユーザー").slice(0, 80);
+  const messageText = String(message.text || "").trim();
+  const preview = messageText || (message.imageUrl ? "写真が届きました" : "新しいメッセージ");
+  const body = preview.length > 120 ? preview.slice(0, 117) + "…" : preview;
   for (const [endpoint, entry] of Object.entries(subscriptions)) {
-    if (entry.uid === senderUid || !recipients.has(entry.uid)) continue;
+    if (entry.uid === message.uid || !recipients.has(entry.uid)) continue;
     jobs.push(webpush.sendNotification(entry.subscription, JSON.stringify({
-      title: "ChatSite", body: "新しいメッセージが届きました", url: entry.basePath || process.env.APP_BASE_PATH || "/"
+      title: senderName + " からメッセージ",
+      body,
+      url: entry.basePath || process.env.APP_BASE_PATH || "/"
     })).catch(err => {
       if (err.statusCode === 404 || err.statusCode === 410) { delete subscriptions[endpoint]; changed = true; }
       else console.error("Push delivery failed:", err.statusCode || err.message);
@@ -440,7 +446,7 @@ app.post("/api/conversations/:id/messages", requireLogin, async (req, res, next)
     };
     await appendMessage(message);
     res.status(201).json({ message });
-    sendNewMessagePush(req.user.uid, conversation.memberUids).catch(e => console.error("Push notification failed:", e));
+    sendNewMessagePush(message, conversation.memberUids).catch(e => console.error("Push notification failed:", e));
   } catch (e) { next(e); }
 });
 
