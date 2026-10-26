@@ -17,6 +17,7 @@ const USERS_FILE = path.join(DATA_DIR, "users.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.jsonl");
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, "push-subscriptions.json");
 const CONVERSATIONS_FILE = path.join(DATA_DIR, "conversations.json");
+const READS_FILE = path.join(DATA_DIR, "read-receipts.json");
 const MAX_TEXT = 4000;
 const MAX_MESSAGES = 200;
 const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
@@ -71,6 +72,17 @@ async function writeConversations(data) {
   const tmp = CONVERSATIONS_FILE + ".tmp";
   await fsp.writeFile(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   await fsp.rename(tmp, CONVERSATIONS_FILE);
+}
+async function readReceipts() {
+  await ensureDataDirs();
+  try { return JSON.parse(await fsp.readFile(READS_FILE, "utf8")); }
+  catch (e) { if (e.code === "ENOENT") return {}; throw e; }
+}
+async function writeReceipts(data) {
+  await ensureDataDirs();
+  const tmp = READS_FILE + ".tmp";
+  await fsp.writeFile(tmp, JSON.stringify(data), { mode: 0o600 });
+  await fsp.rename(tmp, READS_FILE);
 }
 async function appendMessage(message) {
   writeQueue = writeQueue.then(async () => {
@@ -294,13 +306,45 @@ app.post("/api/conversations/group", requireLogin, async (req, res, next) => {
     res.status(201).json({ conversation: { id: conversation.id } });
   } catch (e) { next(e); }
 });
+app.post("/api/conversations/:id/members", requireLogin, async (req, res, next) => {
+  try {
+    const submitted = Array.isArray(req.body?.memberUids) ? req.body.memberUids : [];
+    const addUids = [...new Set(submitted.filter(uid => typeof uid === "string" && uid !== req.user.uid))];
+    if (!addUids.length) return res.status(400).json({ error: "追加するユーザーを選択してください" });
+    const conversations = await readConversations();
+    const conversation = conversations[req.params.id];
+    if (!conversation || conversation.type !== "group" || !conversation.memberUids.includes(req.user.uid))
+      return res.status(404).json({ error: "グループが見つからないか、参加権限がありません" });
+    const users = await readUsers();
+    const userByUid = new Map(Object.values(users).map(u => [u.uid, u]));
+    if (addUids.some(uid => !userByUid.has(uid))) return res.status(400).json({ error: "存在しないユーザーが含まれています" });
+    const newUids = addUids.filter(uid => !conversation.memberUids.includes(uid));
+    if (!newUids.length) return res.status(400).json({ error: "選択したユーザーはすでに参加しています" });
+    if (conversation.memberUids.length + newUids.length > 50) return res.status(400).json({ error: "グループは50人までです" });
+    conversation.memberUids.push(...newUids);
+    for (const uid of newUids) conversation.memberNames[uid] = userByUid.get(uid).username;
+    await writeConversations(conversations);
+    res.json({ added: newUids.length, conversation: { id: conversation.id } });
+  } catch (e) { next(e); }
+});
+
 app.get("/api/conversations/:id/messages", requireLogin, async (req, res, next) => {
   try {
     const conversations = await readConversations();
     const conversation = conversations[req.params.id];
     if (!conversation || !conversation.memberUids.includes(req.user.uid)) return res.status(404).json({ error: "会話が見つからないか、参加権限がありません" });
-    const messages = (await readMessages()).filter(m => m.conversationId === conversation.id);
-    res.set("Cache-Control", "no-store").json({ messages: messages.slice(-MAX_MESSAGES) });
+    const messages = (await readMessages()).filter(m => m.conversationId === conversation.id).slice(-MAX_MESSAGES);
+    const receipts = await readReceipts();
+    let changed = false;
+    for (const message of messages) {
+      if (message.uid !== req.user.uid) {
+        const readers = Array.isArray(receipts[message.id]) ? receipts[message.id] : [];
+        if (!readers.includes(req.user.uid)) { receipts[message.id] = [...readers, req.user.uid]; changed = true; }
+      }
+    }
+    if (changed) await writeReceipts(receipts);
+    const withReceipts = messages.map(message => ({ ...message, readBy: receipts[message.id] || [] }));
+    res.set("Cache-Control", "no-store").json({ messages: withReceipts });
   } catch (e) { next(e); }
 });
 app.post("/api/photos", requireLogin, (req, res, next) => {
