@@ -385,25 +385,31 @@ app.post("/api/photos", requireLogin, (req, res, next) => {
     if (err) return res.status(400).json({ error: err.code === "LIMIT_FILE_SIZE" ? "写真は10MB以下にしてください" : err.message });
     if (!req.file) return res.status(400).json({ error: "写真ファイルを選択してください" });
     try {
-      let compressed = null;
-      const widths = [1600, 1400, 1200, 1000, 800, 640, 480, 360, 240];
-      const qualities = [82, 72, 62, 52, 42, 32, 24];
-      for (const width of widths) {
-        for (const quality of qualities) {
-          compressed = await sharp(req.file.buffer, { animated: false })
-            .rotate()
-            .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
-            .jpeg({ quality, mozjpeg: true })
-            .toBuffer();
-          if (compressed.length <= PHOTO_MAX_BYTES) break;
+      let savedBuffer = req.file.buffer;
+      let extension = allowedImageTypes[req.file.mimetype];
+      if (savedBuffer.length > PHOTO_MAX_BYTES) {
+        let compressed = null;
+        const widths = [1600, 1400, 1200, 1000, 800, 640, 480, 360, 240];
+        const qualities = [82, 72, 62, 52, 42, 32, 24];
+        for (const width of widths) {
+          for (const quality of qualities) {
+            compressed = await sharp(req.file.buffer, { animated: false })
+              .rotate()
+              .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
+              .jpeg({ quality, mozjpeg: true })
+              .toBuffer();
+            if (compressed.length <= PHOTO_MAX_BYTES) break;
+          }
+          if (compressed && compressed.length <= PHOTO_MAX_BYTES) break;
         }
-        if (compressed && compressed.length <= PHOTO_MAX_BYTES) break;
+        if (!compressed || compressed.length > PHOTO_MAX_BYTES)
+          return res.status(400).json({ error: "写真を256KB以下に圧縮できませんでした。別の画像を選択してください" });
+        savedBuffer = compressed;
+        extension = ".jpg";
       }
-      if (!compressed || compressed.length > PHOTO_MAX_BYTES)
-        return res.status(400).json({ error: "写真を256KB以下に圧縮できませんでした。別の画像を選択してください" });
-      const filename = crypto.randomUUID() + ".jpg";
-      await fsp.writeFile(path.join(PHOTO_DIR, filename), compressed, { flag: "wx", mode: 0o600 });
-      res.status(201).json({ imageUrl: "/api/photos/" + filename, size: compressed.length });
+      const filename = crypto.randomUUID() + extension;
+      await fsp.writeFile(path.join(PHOTO_DIR, filename), savedBuffer, { flag: "wx", mode: 0o600 });
+      res.status(201).json({ imageUrl: "/api/photos/" + filename, size: savedBuffer.length });
     } catch (e) { next(e); }
   });
 });
