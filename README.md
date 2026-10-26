@@ -1,131 +1,72 @@
 # ChatSite — Raspberry Pi / Node.js
 
-Googleアカウントでログインする全体チャット。サイト配信・テキスト保存はRaspberry Pi、写真本体はGoogle Driveです。
+ユーザー名とパスワードでアカウントを作成して使う、Raspberry Pi向けの軽量チャットです。GoogleアカウントやFirebaseの設定は不要です。
 
-## 主な構成
+## 主な機能
 
-- Node.js/ExpressでWebサイトとAPIを配信。既定ポートは **3010**
-- テキストと写真URLを DATA_DIR/messages.jsonl に追記保存
-- Firebase AuthenticationはGoogleログインとIDトークン検証だけに使用
-- Web Pushで新着通知。通知購読は DATA_DIR/push-subscriptions.json に保存
-- `server.js` がGitHubのmainを60秒ごとに確認し、更新があれば `git pull` と `npm install` を実行。systemd経由で起動していればサービスを自動再起動
+- Node.js / ExpressでWebサイトとAPIを配信。既定ポートは **3010**
+- ユーザー登録・ログイン。パスワードはソルト付きハッシュで保存し、平文では保存しません
+- メッセージ、アカウント情報、写真をRaspberry Piのローカルディスクに保存
+- 写真は保存から3日経過すると自動削除（サーバー起動時と、その後1時間ごとに確認）
+- オプションでWeb Push通知に対応（HTTPSとVAPID設定が必要）
+- GitHubのmainブランチを60秒ごとに確認し、更新を取得してサーバーを再起動
 
-## Raspberry Piへの初回導入
+## いちばん簡単な起動方法
 
-Node.js 18以降とGitをインストールしてから：
+Raspberry PiにNode.js 18以降とGitをインストールして、ターミナルで次を実行します。
 
 ```bash
 git clone https://github.com/HARUSINN0422/chatsite.git
 cd chatsite
 npm install
+npm start
 ```
 
-### 1. Googleログイン設定
+起動したら、ブラウザで `http://ラズパイのIPアドレス:3010` を開きます。自分のアカウントは画面の「新規アカウントを作成」から登録します。ユーザー名は英数字・`_`・`-` の3〜24文字、パスワードは8〜128文字です。
 
-Firebase Consoleでプロジェクトを作り、Authentication → Sign-in methodでGoogleを有効化します。Webアプリ設定の値を index.html 内の FIREBASE_CONFIG に入れます。アクセスするホスト名（ドメインまたはIP）をFirebase Authenticationの承認済みドメインに登録してください。Firebase AuthenticationのWebログインではHTTPSが必要です（localhostを除く）。
+止めるときは起動したターミナルで **Ctrl+C** を押します。ここではOS起動時の自動起動設定は行いません。必要な場合は別途設定してください。
 
-Firebaseサービスアカウントの秘密鍵JSONはPi上のみに置き、GitHubへ絶対にコミットしないでください。例：
+## 保存先
 
-```bash
-sudo mkdir -p /etc/chatsite
-sudo chown "$USER":"$USER" /etc/chatsite
-# 安全な方法でJSONを /etc/chatsite/firebase-service-account.json に配置
-chmod 600 /etc/chatsite/firebase-service-account.json
-```
+既定ではリポジトリ内の `data/` フォルダーです。環境変数 `DATA_DIR` を指定すると変更できます。
 
-### 2. Safariなどを閉じていても通知を受け取る設定
+- `data/users.json` — ユーザー名とパスワードハッシュ
+- `data/messages.jsonl` — チャットメッセージ
+- `data/photos/` — アップロードされた写真
+- `data/push-subscriptions.json` — 通知購読情報
 
-Web Pushはブラウザの通知許可とHTTPSが必要です。VAPIDキーをPi上で生成します：
+このフォルダーには個人情報が含まれます。GitHubへコミットしたり、公開したりしないでください。バックアップを作る場合は `data/` を安全な場所にコピーしてください。写真は3日経過すると削除されるため、必要な写真は期限前に別途保存してください。
 
-```bash
-npx web-push generate-vapid-keys
-```
+## 写真について
 
-表示されたPublic KeyとPrivate Keyは同じペアを使います。Public KeyはサーバーAPIから配布します。以下の環境変数を設定します：
+- JPEG、PNG、GIF、WebP、AVIFに対応
+- 1枚あたり10MBまで
+- 写真はRaspberry Piに保存され、保存時刻から3日経過後に削除
+- 削除後もチャットのメッセージ自体は残りますが、写真は表示できなくなります
 
-- VAPID_PUBLIC_KEY：生成したPublic Key
-- VAPID_PRIVATE_KEY：生成したPrivate Key（秘密。GitHubへ保存しない）
-- VAPID_SUBJECT：例 mailto:管理者のメールアドレス
+## GitHubからの自動更新
 
-VAPIDキーは一度生成したら同じものを使い続けてください。変更すると既存の通知購読を作り直す必要があります。HTTPSでサイトにアクセスしてGoogleログイン後、「通知を有効化」を押し、ブラウザの通知許可を認めます。購読情報はPiに保存され、他のユーザーが投稿すると本文を含めず「新しいメッセージが届きました」という通知を送ります。
+起動中のサーバーはGitHubの `main` を60秒ごとに確認し、更新があれば `git pull --ff-only` と `npm install --omit=dev` を実行します。`npm start` で起動している場合、付属のランナーが更新後にサーバーを再起動します。Pi側で手動編集したファイルがあると更新に失敗することがあります。コード変更は基本的にGitHub側で行ってください。
 
-**Safariについて**
-- macOSのSafariでは通知を許可し、サイトの通知をシステム設定でも許可してください。
-- iPhone/iPadのSafariでは、Web Push対応OS（iOS/iPadOS 16.4以降）でサイトをホーム画面に追加し、そのホーム画面アイコンから開いて通知を有効化する必要があります。通常のSafariタブを閉じた場合の動作はOS・インストール状態・通知設定に依存します。
-- OSの集中モード、バッテリー設定、ネット接続、通知許可の状態によっては届かない場合があります。端末が完全に電源OFF・オフラインの間は即時配信できません。
-- HTTPSが必要です。家庭内のIPアドレスへHTTPで開くだけではプッシュ通知が使えない場合があります。外部公開する場合はHTTPS付きドメインや安全なトンネルを設定してください。
+## プッシュ通知（任意）
 
-### 3. 3010ポートで起動
+通知を使わない場合、この項目は飛ばして構いません。通知にはHTTPSとVAPIDキーが必要です。初回に次を実行します。
+
+```npx web-push generate-vapid-keys```
+
+生成したキーを、起動前に環境変数として設定します。
 
 ```bash
-export PORT=3010
-export GOOGLE_APPLICATION_CREDENTIALS=/etc/chatsite/firebase-service-account.json
-export DATA_DIR=/var/lib/chatsite
 export VAPID_PUBLIC_KEY='生成したPublic Key'
 export VAPID_PRIVATE_KEY='生成したPrivate Key'
 export VAPID_SUBJECT='mailto:管理者のメールアドレス'
 npm start
 ```
 
-ブラウザで http://ラズパイのIPアドレス:3010 を開きます。同じWi-Fi内の確認には使えますが、Googleログインとプッシュ通知を利用する本番公開ではHTTPSを設定してください。ポート3010をインターネットへ直接公開するより、HTTPSリバースプロキシまたは安全なトンネルを推奨します。
+キーは秘密情報として扱い、GitHubへ保存しないでください。HTTPSでアクセスしたあと、ログインして「通知を有効化」を押します。iPhone/iPadでは、Web Push対応のiOS/iPadOS 16.4以降でサイトをホーム画面に追加し、そのアイコンから開く必要があります。
 
-## systemdで常時起動
+## 注意
 
-/etc/systemd/system/chatsite.service を作成し、実際のLinuxユーザー名とリポジトリの配置先を合わせます：
-
-```ini
-[Unit]
-Description=ChatSite Node.js server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/chatsite
-Environment=NODE_ENV=production
-Environment=PORT=3010
-Environment=DATA_DIR=/var/lib/chatsite
-Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/chatsite/firebase-service-account.json
-Environment=VAPID_PUBLIC_KEY=ここにPublicKey
-Environment=VAPID_PRIVATE_KEY=ここにPrivateKey
-Environment=VAPID_SUBJECT=mailto:管理者のメールアドレス
-ExecStart=/usr/bin/node /home/pi/chatsite/server.js
-Restart=on-failure
-RestartSec=5
-NoNewPrivileges=true
-ProtectSystem=full
-ReadWritePaths=/var/lib/chatsite
-
-[Install]
-WantedBy=multi-user.target
-```
-
-VAPID Private Keyは秘密情報です。設定ファイルの権限を制限します：
-
-```bash
-sudo chmod 600 /etc/systemd/system/chatsite.service
-sudo mkdir -p /var/lib/chatsite
-sudo chown pi:pi /var/lib/chatsite
-sudo systemctl daemon-reload
-sudo systemctl enable --now chatsite
-sudo systemctl status chatsite
-```
-
-## GitHub更新をPiに自動反映
-
-FPSgameと同じように、起動中の `server.js` がGitHubの `main` ブランチを**60秒ごと**に確認します。更新があれば、次の処理を自動実行します。
-
-1. GitHubから更新を取得（`git pull --ff-only`）
-2. 依存パッケージを更新（`npm install --omit=dev`）
-3. Node.jsプロセスを終了コード75で終了し、systemdの `Restart=on-failure` で再起動
-
-このため、Piで一度cloneしてsystemdサービスを設定すれば、以後はGitHubの `main` にpushした変更が通常約1分後＋更新処理時間で反映されます。Piがインターネットに接続されている必要があります。
-
-**注意:** この方式で自動再起動するには、手順のとおり `chatsite.service` をsystemdに登録し、`Restart=on-failure` を設定してください。ターミナルで `node server.js` を直接起動しただけでは、更新後のプロセス再起動は自動では行われません。また、別方式の `chatsite-update.timer` は同時に有効化しないでください。更新処理が二重に走るのを防ぐためです。
-
-ラズパイ側で手動編集したファイルがある場合、`git pull --ff-only` が失敗して自動更新されません。基本的にGitHub側を正として使用してください。メッセージや通知購読データは `/var/lib/chatsite` に置き、リポジトリ外で管理してください。
-
-## バックアップ
-
-/var/lib/chatsite/messages.jsonl と /var/lib/chatsite/push-subscriptions.json を定期バックアップしてください。SDカード故障に備え、別ドライブにも保存することを推奨します。小規模な個人利用向けの構成です。
+- アカウントとデータはこのRaspberry Pi内に保存されます。SDカード故障に備えて必要なデータをバックアップしてください。
+- インターネットへ公開する場合、HTTPのまま公開せずHTTPSを設定してください。パスワードログインや通知を安全に使うためにもHTTPSを推奨します。
+- ユーザー登録はサイトへアクセスできる人なら誰でも行えます。公開範囲を制限したい場合は、別途アクセス制御を設定してください。
