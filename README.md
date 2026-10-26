@@ -8,7 +8,7 @@ Googleアカウントでログインする全体チャット。サイト配信�
 - テキストと写真URLを DATA_DIR/messages.jsonl に追記保存
 - Firebase AuthenticationはGoogleログインとIDトークン検証だけに使用
 - Web Pushで新着通知。通知購読は DATA_DIR/push-subscriptions.json に保存
-- systemd timerでGitHubのmainを毎分確認し、更新があればPi上のコードを更新してサービスを再起動
+- `server.js` がGitHubのmainを60秒ごとに確認し、更新があれば `git pull` と `npm install` を実行。systemd経由で起動していればサービスを自動再起動
 
 ## Raspberry Piへの初回導入
 
@@ -114,18 +114,17 @@ sudo systemctl status chatsite
 
 ## GitHub更新をPiに自動反映
 
-リポジトリには scripts/update.sh、chatsite-update.service、chatsite-update.timer を用意しています。Pi側でGitHubのmainブランチを毎分確認し、更新があると fast-forward更新、npm install、Node.jsサービス再起動を行う方式です。GitHubにpushした直後に反映されるとは限らず、通常は次の確認まで最大約1分＋インストール時間かかります。Piがインターネットに接続され、timerが有効である必要があります。
+FPSgameと同じように、起動中の `server.js` がGitHubの `main` ブランチを**60秒ごと**に確認します。更新があれば、次の処理を自動実行します。
 
-```bash
-sudo cp chatsite-update.service /etc/systemd/system/
-sudo cp chatsite-update.timer /etc/systemd/system/
-sudo chmod +x /home/pi/chatsite/scripts/update.sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now chatsite-update.timer
-systemctl list-timers chatsite-update.timer
-```
+1. GitHubから更新を取得（`git pull --ff-only`）
+2. 依存パッケージを更新（`npm install --omit=dev`）
+3. Node.jsプロセスを終了コード75で終了し、systemdの `Restart=on-failure` で再起動
 
-サービスファイルとスクリプトの既定パスは /home/pi/chatsite です。別の場所にcloneした場合は両方を変更してください。更新スクリプトはroot権限で実行するため、GitHubから取得するコードは自分が管理するリポジトリのものに限定し、変更内容を確認してください。自動更新はPi上のソースコードのみを更新します。/var/lib/chatsite のメッセージや通知購読データはGit管理外なので更新で上書きしません。
+このため、Piで一度cloneしてsystemdサービスを設定すれば、以後はGitHubの `main` にpushした変更が通常約1分後＋更新処理時間で反映されます。Piがインターネットに接続されている必要があります。
+
+**注意:** この方式で自動再起動するには、手順のとおり `chatsite.service` をsystemdに登録し、`Restart=on-failure` を設定してください。ターミナルで `node server.js` を直接起動しただけでは、更新後のプロセス再起動は自動では行われません。また、別方式の `chatsite-update.timer` は同時に有効化しないでください。更新処理が二重に走るのを防ぐためです。
+
+ラズパイ側で手動編集したファイルがある場合、`git pull --ff-only` が失敗して自動更新されません。基本的にGitHub側を正として使用してください。メッセージや通知購読データは `/var/lib/chatsite` に置き、リポジトリ外で管理してください。
 
 ## バックアップ
 
