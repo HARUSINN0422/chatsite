@@ -21,6 +21,14 @@ input[type=text],input[type=password]{display:block;width:100%;margin:8px 0 14px
 @media(max-width:760px){.chat-layout{grid-template-columns:minmax(0,1fr)}.sidebar{order:1;position:fixed;z-index:1001;left:0;top:0;bottom:0;width:min(86vw,340px);max-height:none;height:100dvh;overflow-y:auto;overscroll-behavior:contain;border-radius:0 18px 18px 0;padding:calc(18px + env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom));transform:translateX(-105%);visibility:hidden;transition:transform .25s ease,visibility .25s;box-shadow:12px 0 32px rgba(0,0,0,.35)}body.sidebar-open .sidebar{transform:translateX(0);visibility:visible}body.sidebar-open{overflow:hidden}.sidebar-overlay{display:block;position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:1000;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s}body.sidebar-open .sidebar-overlay{opacity:1;visibility:visible}.mobile-sidebar-toggle{display:inline-flex;margin:0 0 10px;align-items:center;gap:6px}.conversation-area{order:0}.user-results{max-height:180px;overflow:auto;overscroll-behavior:contain}.conversation-list{max-height:220px;overflow:auto;overscroll-behavior:contain}.conversation-heading{padding:13px}.chat-layout{gap:12px}.conversation-area #messages{height:min(52dvh,560px);min-height:180px}}
 @media(max-width:600px){header{align-items:flex-start;gap:8px}header h1{flex:0 0 auto}header .top-actions{min-width:0;gap:5px}#userLabel{max-width:75px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}header button{padding:7px 9px;font-size:12px}.composer{padding:10px 10px calc(10px + env(safe-area-inset-bottom))}.compose-row{gap:5px}.compose-row textarea{min-width:0;width:100%;font-size:16px}.composer label.secondary{padding:10px 8px!important;font-size:13px}.composer button{padding:10px 10px;font-size:13px}main{padding-bottom:190px}.panel{padding:14px;border-radius:16px}.conversation-heading strong{overflow-wrap:anywhere}.member-list{gap:6px}}
 @media(max-width:600px){.msg img{max-width:min(100%,280px);max-height:210px}.photo-viewer{padding:60px 8px calc(12px + env(safe-area-inset-bottom))}.photo-viewer img{max-width:96vw;max-height:calc(100dvh - 84px)}.photo-close{top:max(10px,env(safe-area-inset-top));right:10px}header{padding:11px 12px}header h1{font-size:18px}header .top-actions{gap:6px}header button{padding:8px 10px;font-size:13px}main{padding:14px 10px 190px}.panel{padding:16px;border-radius:18px}.center{margin:5vh auto}.compose-row{gap:6px}.compose-row textarea{min-width:0;padding:10px;font-size:16px}.composer{padding:10px 10px calc(10px + env(safe-area-inset-bottom))}.composer label.secondary{padding:10px 9px!important}.composer button{padding:10px 12px}}
+
+.information-overlay{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(0,0,0,.78);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.information-dialog{width:min(100%,640px);max-height:min(82dvh,720px);overflow:auto;padding:24px;background:#151d27;border:1px solid rgba(131,184,255,.4);border-radius:20px;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+.information-dialog h2{margin:0 0 14px;font-size:22px}
+.information-content{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;max-height:calc(82dvh - 150px);overflow-y:auto}
+.information-actions{display:flex;justify-content:flex-end;margin-top:20px}
+@media(max-width:600px){.information-overlay{padding:10px}.information-dialog{padding:18px;border-radius:16px;max-height:calc(100dvh - 20px)}.information-content{max-height:calc(100dvh - 190px)}}
+
 </style>
 </head>
 <body>
@@ -66,6 +74,13 @@ input[type=text],input[type=password]{display:block;width:100%;margin:8px 0 14px
 </main>
 <form id="composer" class="composer hidden"><div class="compose-row"><label for="photo" class="secondary" style="padding:10px 12px;border-radius:10px;cursor:pointer;white-space:nowrap">写真<input id="photo" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif" hidden></label><textarea id="messageText" placeholder="メッセージを書く…" maxlength="4000" aria-label="メッセージ"></textarea><button id="send" type="submit">送信</button></div><div id="photoName" class="small muted"></div><div class="small muted">写真は最大10MBまで選択でき、保存時に256KB以下へ自動圧縮します。保存から3日後に自動削除されます。</div></form>
 <div id="photoViewer" class="photo-viewer hidden" role="dialog" aria-modal="true" aria-label="写真表示"><button id="photoClose" class="photo-close" type="button" aria-label="写真を閉じる">×</button><div class="photo-viewer-inner"><img id="photoViewerImage" alt="拡大表示された写真"></div></div>
+<div id="informationOverlay" class="information-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="informationTitle">
+ <section class="information-dialog" tabindex="-1">
+  <h2 id="informationTitle">お知らせ</h2>
+  <div id="informationContent" class="information-content"></div>
+  <div class="information-actions"><button id="informationAcknowledge" type="button">確認しました</button></div>
+ </section>
+</div>
 <script>
 const $ = id => document.getElementById(id);
 const BASE_PATH = location.pathname.startsWith("/chatsite") ? "/chatsite" : "";
@@ -92,6 +107,36 @@ async function api(url, options={}) {
  if(!res.ok) throw new Error(data.error||("サーバーエラー ("+res.status+")"));
  return data;
 }
+const INFORMATION_COOKIE = "chatsite_information_seen";
+function getInformationCookie(){
+ const prefix=INFORMATION_COOKIE+"=";
+ const cookie=document.cookie.split(";").map(part=>part.trim()).find(part=>part.startsWith(prefix));
+ if(!cookie)return "";
+ try{return decodeURIComponent(cookie.slice(prefix.length))}catch{return ""}
+}
+function setInformationCookie(version){
+ document.cookie=INFORMATION_COOKIE+"="+encodeURIComponent(version)+"; Path="+APP_SCOPE+"; Max-Age=31536000; SameSite=Lax"+(location.protocol==="https:"?"; Secure":"");
+}
+async function checkInformation(){
+ try{
+  const response=await fetch(appUrl("/api/information"),{credentials:"same-origin",cache:"no-store"});
+  if(!response.ok)throw new Error("お知らせの取得に失敗しました ("+response.status+")");
+  const data=await response.json();
+  const content=typeof data.content==="string"?data.content:"";
+  if(!content.trim()||typeof data.version!=="string")return;
+  if(getInformationCookie()===data.version)return;
+  $("informationContent").textContent=content;
+  $("informationOverlay").dataset.version=data.version;
+  $("informationOverlay").classList.remove("hidden");
+  $("informationAcknowledge").focus();
+ }catch(err){console.error("[Information] お知らせを読み込めませんでした:",err)}
+}
+$("informationAcknowledge").addEventListener("click",()=>{
+ const overlay=$("informationOverlay");
+ const version=overlay.dataset.version;
+ if(version)setInformationCookie(version);
+ overlay.classList.add("hidden");
+});
 let pushProvider="vapid", oneSignalInstance=null;
 async function initializePushProvider(){
  const config=await api("/api/push/config");
@@ -338,6 +383,7 @@ $("openSidebar").addEventListener("click",()=>{const open=!document.body.classLi
 $("sidebarOverlay").addEventListener("click",closeMobileSidebar);
 document.addEventListener("keydown",e=>{if(e.key==="Escape")closeMobileSidebar()});
 async function init(){try{const data=await api("/api/me");showSignedIn(data.user)}catch{showAuth()}}
+checkInformation();
 init();
 if("serviceWorker" in navigator && location.protocol!=="file:"){window.addEventListener("load",()=>navigator.serviceWorker.register(appUrl("/sw.js"),{scope:APP_SCOPE}).catch(console.error))}
 </script>
