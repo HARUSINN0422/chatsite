@@ -30,7 +30,7 @@ const AUTO_UPDATE_INTERVAL = 60 * 1000;
 const AUTO_UPDATE_BRANCH = "main";
 const scrypt = promisify(crypto.scrypt);
 const sessions = new Map();
-let updateInProgress = false;\nconst activeCalls = new Map();\nlet nextSignalSeq = 1;
+let updateInProgress = false;
 let writeQueue = Promise.resolve();
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
@@ -313,93 +313,7 @@ app.post("/api/conversations/dm", requireLogin, async (req, res, next) => {
     res.status(201).json({ conversation: { id: conversation.id } });
   } catch (e) { next(e); }
 });
-
-function callPublicView(call, viewerUid) {
-  return { id: call.id, conversationId: call.conversationId, kind: call.kind, status: call.status,
-    caller: call.callerUid === viewerUid, callerUid: call.callerUid, calleeUid: call.calleeUid,
-    fromName: call.callerName, createdAt: call.createdAt };
-}
-function getAuthorizedCall(callId, uid) {
-  const call = activeCalls.get(callId);
-  if (!call || (call.callerUid !== uid && call.calleeUid !== uid)) return null;
-  return call;
-}
-app.post("/api/calls", requireLogin, async (req, res, next) => {
-  try {
-    const conversationId = typeof req.body?.conversationId === "string" ? req.body.conversationId : "";
-    const kind = req.body?.kind === "video" ? "video" : req.body?.kind === "audio" ? "audio" : "";
-    if (!kind) return res.status(400).json({ error: "通話形式が無効です" });
-    const conversations = await readConversations();
-    const conversation = conversations[conversationId];
-    if (!conversation || conversation.type !== "dm" || conversation.memberUids.length !== 2 || !conversation.memberUids.includes(req.user.uid))
-      return res.status(403).json({ error: "1対1のDMからのみ発信できます" });
-    for (const c of activeCalls.values()) {
-      if (c.status === "ringing" || c.status === "accepted") {
-        if (c.callerUid === req.user.uid || c.calleeUid === req.user.uid)
-          return res.status(409).json({ error: "すでに別の通話が進行中です" });
-      }
-    }
-    const calleeUid = conversation.memberUids.find(uid => uid !== req.user.uid);
-    const users = await readUsers();
-    const callerName = Object.values(users).find(u => u.uid === req.user.uid)?.username || req.user.username;
-    const call = { id: crypto.randomUUID(), conversationId, callerUid: req.user.uid, calleeUid,
-      callerName, kind, status: "ringing", createdAt: Date.now(), signals: [] };
-    activeCalls.set(call.id, call);
-    res.status(201).json({ call: { ...callPublicView(call, req.user.uid), caller: true } });
-  } catch (e) { next(e); }
-});
-app.get("/api/calls", requireLogin, (req, res) => {
-  const now = Date.now();
-  for (const [id, call] of activeCalls) {
-    if (now - call.createdAt > (call.status === "ringing" ? 90000 : 4 * 60 * 60 * 1000)) activeCalls.delete(id);
-  }
-  res.set("Cache-Control", "no-store").json({ calls: [...activeCalls.values()]
-    .filter(c => c.callerUid === req.user.uid || c.calleeUid === req.user.uid)
-    .map(c => ({ ...callPublicView(c, req.user.uid), callee: c.calleeUid === req.user.uid })) });
-});
-app.get("/api/calls/:id", requireLogin, (req, res) => {
-  const call = getAuthorizedCall(req.params.id, req.user.uid);
-  if (!call) return res.status(404).json({ error: "通話が見つかりません" });
-  if (call.status === "ringing" && Date.now() - call.createdAt > 90000) call.status = "missed";
-  res.set("Cache-Control", "no-store").json({ call: callPublicView(call, req.user.uid) });
-});
-app.post("/api/calls/:id/answer", requireLogin, (req, res) => {
-  const call = getAuthorizedCall(req.params.id, req.user.uid);
-  if (!call || call.calleeUid !== req.user.uid) return res.status(404).json({ error: "着信が見つかりません" });
-  if (call.status !== "ringing") return res.status(409).json({ error: "この着信には応答できません" });
-  if (Date.now() - call.createdAt > 90000) { call.status = "missed"; return res.status(410).json({ error: "着信の有効期限が切れました" }); }
-  if (req.body?.accept === true) call.status = "accepted";
-  else call.status = "declined";
-  res.json({ call: callPublicView(call, req.user.uid) });
-});
-app.post("/api/calls/:id/signals", requireLogin, express.json({ limit: "64kb" }), (req, res) => {
-  const call = getAuthorizedCall(req.params.id, req.user.uid);
-  if (!call || call.status === "ended" || call.status === "declined" || call.status === "missed")
-    return res.status(404).json({ error: "有効な通話が見つかりません" });
-  const { type, data } = req.body || {};
-  if (!["offer", "answer", "candidate"].includes(type) || !data || JSON.stringify(data).length > 50000)
-    return res.status(400).json({ error: "接続情報が無効です" });
-  if (type === "offer" && (req.user.uid !== call.callerUid || call.status !== "accepted"))
-    return res.status(403).json({ error: "offerを送信できません" });
-  if (type === "answer" && req.user.uid !== call.calleeUid)
-    return res.status(403).json({ error: "answerを送信できません" });
-  call.signals.push({ seq: nextSignalSeq++, toUid: req.user.uid === call.callerUid ? call.calleeUid : call.callerUid, fromUid: req.user.uid, type, data, createdAt: Date.now() });
-  if (call.signals.length > 300) call.signals.splice(0, call.signals.length - 300);
-  res.status(201).json({ ok: true });
-});
-app.get("/api/calls/:id/signals", requireLogin, (req, res) => {
-  const call = getAuthorizedCall(req.params.id, req.user.uid);
-  if (!call) return res.status(404).json({ error: "通話が見つかりません" });
-  const after = Math.max(0, Number.parseInt(req.query.after, 10) || 0);
-  res.set("Cache-Control", "no-store").json({ signals: call.signals.filter(s => s.toUid === req.user.uid && s.seq > after).map(({seq,type,data}) => ({seq,type,data})) });
-});
-app.post("/api/calls/:id/end", requireLogin, (req, res) => {
-  const call = getAuthorizedCall(req.params.id, req.user.uid);
-  if (!call) return res.json({ ok: true });
-  call.status = "ended"; call.signals.length = 0;
-  res.json({ ok: true });
-});
-\napp.post("/api/conversations/group", requireLogin, async (req, res, next) => {
+app.post("/api/conversations/group", requireLogin, async (req, res, next) => {
   try {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
     const submitted = Array.isArray(req.body?.memberUids) ? req.body.memberUids : [];
