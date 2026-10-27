@@ -8,7 +8,7 @@
 - ユーザー登録・ログイン。パスワードはソルト付きハッシュで保存し、平文では保存しません
 - メッセージ、アカウント情報、写真をRaspberry Piのローカルディスクに保存
 - 写真は保存から3日経過すると自動削除（サーバー起動時と、その後1時間ごとに確認）
-- オプションでWeb Push通知に対応（HTTPSとVAPID設定が必要）
+- Web Push通知に対応（OneSignal、または従来のVAPID方式）
 - GitHubのmainブランチを60秒ごとに確認し、更新を取得してサーバーを再起動
 
 ## いちばん簡単な起動方法
@@ -48,22 +48,44 @@ npm start
 
 起動中のサーバーはGitHubの `main` を60秒ごとに確認し、更新があれば `git pull --ff-only` と `npm install --omit=dev` を実行します。`npm start` で起動している場合、付属のランナーが更新後にサーバーを再起動します。Pi側で手動編集したファイルがあると更新に失敗することがあります。コード変更は基本的にGitHub側で行ってください。
 
-## プッシュ通知（任意）
+## プッシュ通知（OneSignal推奨・VAPIDフォールバック）
 
-通知を使わない場合、この項目は飛ばして構いません。通知にはHTTPSとVAPIDキーが必要です。初回に次を実行します。
+ChatSiteはOneSignal Web Pushと、従来のVAPID Web Pushに対応します。OneSignalの設定が完了している場合はOneSignalを使用し、設定がない場合は従来のVAPID方式を使用します。
 
-```npx web-push generate-vapid-keys```
+### OneSignalの設定
 
-生成したキーを、起動前に環境変数として設定します。
+1. [OneSignal](https://onesignal.com/) にログインし、Web用のアプリを作成します。
+2. Web PushのサイトURLとして `https://harusinn.com` を設定します（別ドメインを使う場合は実際のドメインを指定）。
+3. OneSignalの **App ID** と **REST API Key** を取得します。REST API Keyはサーバー専用の秘密情報です。
+4. Raspberry Piの `chatsite/.env` に次の3行を追加し、ChatSiteを再起動します。
+
+```dotenv
+ONESIGNAL_APP_ID=OneSignalのApp ID
+ONESIGNAL_REST_API_KEY=OneSignalのREST API Key
+APP_PUBLIC_URL=https://harusinn.com/chatsite/
+```
+
+付属の `npm start` ランナーは `.env` を読み込みます。シェルですでに同じ環境変数が設定されている場合は、シェル側の値が優先されます。REST API Keyはブラウザへ送信されず、GitHubにも保存しないでください。 `.env` はGitHubへコミットしないでください。
+
+OneSignal用Service Workerは `/chatsite/onesignal/OneSignalSDKWorker.js` に配置しています。既存の `sw.js` とは別のスコープを使い、両者の競合を避けます。通知先はChatSiteのユーザーIDで識別し、メッセージ送信者本人には送信しません。
+
+### 従来のVAPID方式を使う場合
+
+OneSignalの設定がない場合は、従来どおりHTTPSとVAPIDキーが必要です。初回に次を実行します。
 
 ```bash
+npx web-push generate-vapid-keys
 export VAPID_PUBLIC_KEY='生成したPublic Key'
 export VAPID_PRIVATE_KEY='生成したPrivate Key'
 export VAPID_SUBJECT='mailto:管理者のメールアドレス'
 npm start
 ```
 
-キーは秘密情報として扱い、GitHubへ保存しないでください。HTTPSでアクセスしたあと、ログインして「通知を有効化」を押します。iPhone/iPadでは、Web Push対応のiOS/iPadOS 16.4以降でサイトをホーム画面に追加し、そのアイコンから開く必要があります。
+VAPIDキーも秘密情報として扱い、GitHubへ保存しないでください。
+
+### iPhone・iPadで通知を有効にする
+
+HTTPSでサイトを開き、Safariの共有メニューからホーム画面に追加します。ホーム画面のChatSiteアイコンから開いてログインし、「通知を有効化」を押して許可してください。iOS/iPadOS 16.4以降が必要です。OneSignalへ切り替えた後は、各端末で一度通知を有効化してOneSignalに購読を登録してください。
 
 ## 注意
 

@@ -4,6 +4,8 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#111827"><meta name="description" content="Raspberry Pi上のNode.jsで動く軽量チャット">
 <link rel="manifest" href="./manifest.json"><title>ChatSite</title>
+<script>window.OneSignalDeferred = window.OneSignalDeferred || [];</script>
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 <style>
 :root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--bg:#10151b;--panel:rgba(14,18,24,.92);--line:rgba(255,255,255,.12);--accent:#83b8ff;--text:#f4f7fb;--muted:#aab4c0;--field:#10151b}
 *{box-sizing:border-box}html{min-height:100%;background:#6f8fa8}
@@ -90,6 +92,28 @@ async function api(url, options={}) {
  if(!res.ok) throw new Error(data.error||("サーバーエラー ("+res.status+")"));
  return data;
 }
+let pushProvider="vapid", oneSignalInstance=null;
+async function initializePushProvider(){
+ const config=await api("/api/push/config");
+ pushProvider=config.provider||"disabled";
+ if(pushProvider!=="onesignal")return null;
+ if(!config.oneSignalAppId)throw new Error("OneSignal App IDが設定されていません");
+ return await new Promise((resolve,reject)=>{
+  window.OneSignalDeferred=window.OneSignalDeferred||[];
+  window.OneSignalDeferred.push(async function(OneSignal){
+   try{
+    await OneSignal.init({
+     appId:config.oneSignalAppId,
+     serviceWorkerPath:appUrl("/onesignal/OneSignalSDKWorker.js"),
+     serviceWorkerParam:{scope:appUrl("/onesignal/")}
+    });
+    oneSignalInstance=OneSignal;
+    resolve(OneSignal);
+   }catch(err){reject(err)}
+  });
+ });
+}
+let pushSetupPromise=initializePushProvider().catch(err=>{console.error("[Push] 初期化に失敗しました:",err);return null;});
 function renderMessages(messages){
  $("messages").replaceChildren();
  if(!currentConversation){$("messages").innerHTML='<div class="empty-state">左側から会話を選ぶか、ユーザー検索でDMを開始してください。</div>';return}
@@ -194,6 +218,15 @@ function urlBase64ToUint8Array(base64String){
 async function refreshNotificationButton(){
  const button=$("notifyButton");
  try{
+  const os=await pushSetupPromise;
+  if(pushProvider==="onesignal"){
+   if(!os)throw new Error("OneSignalを初期化できません");
+   if(currentUser)await os.login(String(currentUser.uid));
+   const enabled=os.User.PushSubscription.optedIn===true;
+   button.dataset.enabled=enabled?"true":"false";
+   button.textContent=enabled?"通知を解除":"通知を有効化";
+   return;
+  }
   const registration=await navigator.serviceWorker.getRegistration(appUrl("/sw.js"));
   const subscription=registration&&await registration.pushManager.getSubscription();
   button.dataset.enabled=subscription?"true":"false";
@@ -205,6 +238,17 @@ async function enableNotifications(){
  try{
   if(!("serviceWorker" in navigator)||!("PushManager" in window)||!("Notification" in window))throw new Error("このブラウザはプッシュ通知に対応していません");
   if(!window.isSecureContext)throw new Error("通知にはHTTPS接続が必要です（localhostを除く）");
+  if(pushProvider==="onesignal"){
+   const os=await pushSetupPromise;
+   if(!os)throw new Error("OneSignalを初期化できません。設定と接続を確認してください");
+   if(!currentUser)throw new Error("ログインしてください");
+   await os.login(String(currentUser.uid));
+   if(Notification.permission!=="granted")await os.Notifications.requestPermission();
+   if(Notification.permission!=="granted")throw new Error("ブラウザの通知許可が必要です");
+   await os.User.PushSubscription.optIn();
+   button.dataset.enabled="true";button.textContent="通知を解除";setStatus("OneSignalのプッシュ通知を有効にしました");
+   return;
+  }
   if(await Notification.requestPermission()!=="granted")throw new Error("ブラウザの通知許可が必要です");
   const keyRes=await fetch(appUrl("/api/push/public-key"),{cache:"no-store"});const keyData=await keyRes.json();
   if(!keyRes.ok||!keyData.publicKey)throw new Error(keyData.error||"サーバー側のVAPID設定が未完了です");
@@ -219,6 +263,13 @@ async function enableNotifications(){
 async function disableNotifications(){
  const button=$("notifyButton");button.disabled=true;
  try{
+  if(pushProvider==="onesignal"){
+   const os=await pushSetupPromise;
+   if(!os)throw new Error("OneSignalを初期化できません");
+   await os.User.PushSubscription.optOut();
+   button.dataset.enabled="false";button.textContent="通知を有効化";setStatus("OneSignalのプッシュ通知を解除しました");
+   return;
+  }
   const registration=await navigator.serviceWorker.getRegistration(appUrl("/sw.js"));
   const sub=registration&&await registration.pushManager.getSubscription();
   if(sub) await api("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint:sub.endpoint})});
@@ -249,7 +300,7 @@ $("viewMembersButton").addEventListener("click",async()=>{
   panel.classList.remove("hidden");
  }catch(e){setStatus("メンバー一覧エラー: "+e.message)}
 });
-$("signOut").addEventListener("click",async()=>{await disableNotifications();try{await api("/api/logout",{method:"POST"})}catch{}currentUser=null;currentConversation=null;conversations=[];if(pollTimer)clearInterval(pollTimer);pollTimer=null;registerMode=false;showAuth()});
+$("signOut").addEventListener("click",async()=>{await disableNotifications();if(pushProvider==="onesignal"&&oneSignalInstance){try{await oneSignalInstance.logout()}catch(e){console.error("[OneSignal] logout failed:",e)}}try{await api("/api/logout",{method:"POST"})}catch{}currentUser=null;currentConversation=null;conversations=[];if(pollTimer)clearInterval(pollTimer);pollTimer=null;registerMode=false;showAuth()});
 $("userSearch").addEventListener("input",()=>{clearTimeout(searchTimer);searchTimer=setTimeout(searchUsers,180)});
 $("addMembersButton").addEventListener("click",async()=>{
  if(!currentConversation||currentConversation.type!=="group")return;

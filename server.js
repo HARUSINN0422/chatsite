@@ -35,6 +35,9 @@ let writeQueue = Promise.resolve();
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
+const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || "";
+const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || "";
+const oneSignalConfigured = Boolean(ONESIGNAL_APP_ID && ONESIGNAL_REST_API_KEY);
 const pushConfigured = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT);
 if (pushConfigured) webpush.setVapidDetails(process.env.VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
@@ -147,19 +150,55 @@ function validUsername(username) {
   return typeof username === "string" && /^[A-Za-z0-9_-]{3,24}$/.test(username);
 }
 async function sendNewMessagePush(message, recipientUids) {
+  const recipients = [...new Set((recipientUids || []).filter(uid => typeof uid === "string" && uid && uid !== message.uid))];
+  if (!recipients.length) return;
+  const senderName = String(message.displayName || "ユーザー").slice(0, 80);
+  const messageText = String(message.text || "").trim();
+  const preview = messageText || (message.imageUrl ? "写真が届きました" : "新しいメッセージ");
+  const body = preview.length > 120 ? preview.slice(0, 117) + "…" : preview;
+
+  if (oneSignalConfigured) {
+    const notificationUrl = process.env.APP_PUBLIC_URL || "https://harusinn.com/chatsite/";
+    try {
+      const response = await fetch("https://api.onesignal.com/notifications", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Key " + ONESIGNAL_REST_API_KEY
+        },
+        body: JSON.stringify({
+          app_id: ONESIGNAL_APP_ID,
+          include_aliases: { external_id: recipients },
+          target_channel: "push",
+          headings: { en: senderName + " からメッセージ", ja: senderName + " からメッセージ" },
+          contents: { en: body, ja: body },
+          url: notificationUrl
+        })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        console.error("[OneSignal] 通知送信に失敗しました:", response.status, JSON.stringify(result).slice(0, 600));
+      } else if (!result.id) {
+        console.log("[OneSignal] 通知対象の購読端末がありません。", JSON.stringify(result.errors || {}).slice(0, 300));
+      } else {
+        console.log("[OneSignal] 通知を受け付けました:", result.id);
+      }
+    } catch (err) {
+      console.error("[OneSignal] 通知APIへの接続に失敗しました:", err.message);
+    }
+    return;
+  }
+
+  // OneSignalの設定が完了していない場合は、従来のVAPID Web Pushを維持する。
   if (!pushConfigured) return;
   let subscriptions;
   try { subscriptions = await readSubscriptions(); }
   catch (e) { console.error("Push subscription read failed:", e); return; }
   let changed = false;
   const jobs = [];
-  const recipients = new Set(recipientUids || []);
-  const senderName = String(message.displayName || "ユーザー").slice(0, 80);
-  const messageText = String(message.text || "").trim();
-  const preview = messageText || (message.imageUrl ? "写真が届きました" : "新しいメッセージ");
-  const body = preview.length > 120 ? preview.slice(0, 117) + "…" : preview;
+  const recipientSet = new Set(recipients);
   for (const [endpoint, entry] of Object.entries(subscriptions)) {
-    if (entry.uid === message.uid || !recipients.has(entry.uid)) continue;
+    if (entry.uid === message.uid || !recipientSet.has(entry.uid)) continue;
     jobs.push(webpush.sendNotification(entry.subscription, JSON.stringify({
       title: senderName + " からメッセージ",
       body,
@@ -187,6 +226,10 @@ const upload = multer({
 });
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+app.get("/api/push/config", (_req, res) => {
+  const provider = oneSignalConfigured ? "onesignal" : (pushConfigured ? "vapid" : "disabled");
+  res.set("Cache-Control", "no-store").json({ provider, oneSignalAppId: provider === "onesignal" ? ONESIGNAL_APP_ID : "" });
+});
 app.post("/api/register", async (req, res, next) => {
   try {
     const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
