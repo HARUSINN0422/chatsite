@@ -374,6 +374,11 @@ app.get("/api/conversations/:id/messages", requireLogin, async (req, res, next) 
     if (!conversation || !conversation.memberUids.includes(req.user.uid)) return res.status(404).json({ error: "会話が見つからないか、参加権限がありません" });
     const messages = (await readMessages()).filter(m => m.conversationId === conversation.id).slice(-MAX_MESSAGES);
     const receipts = await readReceipts();
+    // Capture the newest incoming message that was unread before this view marks it read.
+    const latestUnread = [...messages].reverse().find(message =>
+      message.uid !== req.user.uid &&
+      !(Array.isArray(receipts[message.id]) ? receipts[message.id] : []).includes(req.user.uid)
+    );
     let changed = false;
     for (const message of messages) {
       if (message.uid !== req.user.uid) {
@@ -383,7 +388,10 @@ app.get("/api/conversations/:id/messages", requireLogin, async (req, res, next) 
     }
     if (changed) await writeReceipts(receipts);
     const withReceipts = messages.map(message => ({ ...message, readBy: receipts[message.id] || [] }));
-    res.set("Cache-Control", "no-store").json({ messages: withReceipts });
+    res.set("Cache-Control", "no-store").json({
+      messages: withReceipts,
+      latestUnreadMessageId: latestUnread ? latestUnread.id : null
+    });
   } catch (e) { next(e); }
 });
 app.post("/api/photos", requireLogin, (req, res, next) => {
