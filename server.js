@@ -225,6 +225,20 @@ const upload = multer({
   }
 });
 
+app.get("/api/information", async (_req, res, next) => {
+  try {
+    let content = "";
+    try {
+      content = await fsp.readFile(path.join(__dirname, "information.txt"), "utf8");
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    const version = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+    res.set("Cache-Control", "no-store").json({ content, version });
+  } catch (e) {
+    next(e);
+  }
+});
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/push/config", (_req, res) => {
   const provider = oneSignalConfigured ? "onesignal" : (pushConfigured ? "vapid" : "disabled");
@@ -521,7 +535,7 @@ async function cleanupOldPhotos() {
   } catch (e) { console.error("[PhotoCleanup] 写真の整理に失敗しました:", e.message); }
 }
 app.use((req, res, next) => {
-  if (req.path === "/data" || req.path.startsWith("/data/")) return res.status(404).end();
+  if (req.path === "/information.txt" || req.path === "/data" || req.path.startsWith("/data/")) return res.status(404).end();
   next();
 });
 app.use(express.static(__dirname, { index: "index.html", etag: true, maxAge: "5m" }));
