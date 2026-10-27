@@ -158,7 +158,7 @@ async function searchUsers(){
  }catch(e){box.innerHTML='<div class="empty-state"></div>';box.firstChild.textContent=e.message}
 }
 
-function callApi(id, suffix=""){return api("/api/calls"+(id?"/"+encodeURIComponent(id):"")+suffix)}
+function callApi(id, suffix="", options={}){if(suffix&&typeof suffix==="object"){options=suffix;suffix=""}return api("/api/calls"+(id?"/"+encodeURIComponent(id):"")+suffix,options)}
 function stopCallPolling(){if(callPollTimer)clearInterval(callPollTimer);if(signalPollTimer)clearInterval(signalPollTimer);callPollTimer=null;signalPollTimer=null}
 function closeCallUi(){ $("callPanel").classList.add("hidden"); $("remoteVideos").replaceChildren(); $("localVideo").srcObject=null; $("localVideo").style.display="none"; }
 async function cleanupCall(notify=true){
