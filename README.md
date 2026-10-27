@@ -57,16 +57,15 @@ ChatSiteはOneSignal Web Pushと、従来のVAPID Web Pushに対応します。O
 1. [OneSignal](https://onesignal.com/) にログインし、Web用のアプリを作成します。
 2. Web PushのサイトURLとして `https://harusinn.com` を設定します（別ドメインを使う場合は実際のドメインを指定）。
 3. OneSignalの **App ID** と **REST API Key** を取得します。REST API Keyはサーバー専用の秘密情報です。
-4. ChatSiteのNode.jsプロセスを起動する環境に、次の変数を設定して再起動します。
+4. Raspberry Piの `chatsite/.env` に次の3行を追加し、ChatSiteを再起動します。
 
-```bash
-export ONESIGNAL_APP_ID='OneSignalのApp ID'
-export ONESIGNAL_REST_API_KEY='OneSignalのREST API Key'
-export APP_PUBLIC_URL='https://harusinn.com/chatsite/'
-npm start
+```dotenv
+ONESIGNAL_APP_ID=OneSignalのApp ID
+ONESIGNAL_REST_API_KEY=OneSignalのREST API Key
+APP_PUBLIC_URL=https://harusinn.com/chatsite/
 ```
 
-既存の起動方法で環境変数や `.env` を読み込んでいる場合は、そちらに3つの変数を追加してください。起動スクリプトが `.env` を読み込んでいない場合、ファイルに書くだけではNode.jsへ反映されません。REST API Keyはブラウザへ送信されず、GitHubにも保存しないでください。
+付属の `npm start` ランナーは `.env` を読み込みます。シェルですでに同じ環境変数が設定されている場合は、シェル側の値が優先されます。REST API Keyはブラウザへ送信されず、GitHubにも保存しないでください。 `.env` はGitHubへコミットしないでください。
 
 OneSignal用Service Workerは `/chatsite/onesignal/OneSignalSDKWorker.js` に配置しています。既存の `sw.js` とは別のスコープを使い、両者の競合を避けます。通知先はChatSiteのユーザーIDで識別し、メッセージ送信者本人には送信しません。
 
