@@ -345,7 +345,20 @@ $("viewMembersButton").addEventListener("click",async()=>{
   panel.classList.remove("hidden");
  }catch(e){setStatus("メンバー一覧エラー: "+e.message)}
 });
-$("signOut").addEventListener("click",async()=>{await disableNotifications();if(pushProvider==="onesignal"&&oneSignalInstance){try{await oneSignalInstance.logout()}catch(e){console.error("[OneSignal] logout failed:",e)}}try{await api("/api/logout",{method:"POST"})}catch{}currentUser=null;currentConversation=null;conversations=[];if(pollTimer)clearInterval(pollTimer);pollTimer=null;registerMode=false;showAuth()});
+$("signOut").addEventListener("click",async()=>{
+ const button=$("signOut");
+ if(button.dataset.loggingOut==="true")return;
+ button.dataset.loggingOut="true";button.disabled=true;button.textContent="ログアウト中…";
+ // End the server session first; notification cleanup must never block logout.
+ try{await api("/api/logout",{method:"POST"})}catch(e){console.error("[ChatSite] server logout failed:",e)}
+ currentUser=null;currentConversation=null;conversations=[];selectedGroupMembers.clear();
+ if(pollTimer)clearInterval(pollTimer);pollTimer=null;
+ closeMobileSidebar();registerMode=false;showAuth();
+ button.dataset.loggingOut="false";button.disabled=false;button.textContent="ログアウト";
+ // Clean up push subscriptions in the background, without delaying the screen transition.
+ if(pushProvider==="onesignal"&&oneSignalInstance){try{await oneSignalInstance.logout()}catch(e){console.error("[OneSignal] logout failed:",e)}}
+ try{await disableNotifications()}catch(e){console.error("[ChatSite] notification cleanup failed:",e)}
+});
 $("userSearch").addEventListener("input",()=>{clearTimeout(searchTimer);searchTimer=setTimeout(searchUsers,180)});
 $("addMembersButton").addEventListener("click",async()=>{
  if(!currentConversation||currentConversation.type!=="group")return;
