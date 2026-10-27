@@ -55,21 +55,21 @@ input[type=text],input[type=password]{display:block;width:100%;margin:8px 0 14px
    <div id="conversationList" class="conversation-list"></div>
   </aside>
   <section class="conversation-area">
-   <div class="panel conversation-heading"><strong id="conversationTitle">会話を選択してください</strong><div id="conversationInfo" class="muted small">ユーザー検索からDMまたはグループを開始できます。</div><button id="viewMembersButton" class="secondary hidden" type="button" style="margin-top:10px">グループのメンバーを見る</button><button id="addMembersButton" class="secondary hidden" type="button" style="margin:10px 0 0 6px">選択したユーザーをグループに追加</button><div id="memberListPanel" class="member-list-panel hidden"><strong>メンバー一覧</strong><div id="memberList" class="member-list"></div></div></div>
+   <div class="panel conversation-heading"><strong id="conversationTitle">会話を選択してください</strong><div id="conversationInfo" class="muted small">ユーザー検索からDMまたはグループを開始できます。</div><div id="callActions" class="top-actions hidden" style="justify-content:flex-start;margin-top:10px"><button id="audioCallButton" type="button">音声通話</button><button id="videoCallButton" type="button">ビデオ通話</button></div><button id="viewMembersButton" class="secondary hidden" type="button" style="margin-top:10px">グループのメンバーを見る</button><button id="addMembersButton" class="secondary hidden" type="button" style="margin:10px 0 0 6px">選択したユーザーをグループに追加</button><div id="memberListPanel" class="member-list-panel hidden"><strong>メンバー一覧</strong><div id="memberList" class="member-list"></div></div></div>
    <div id="status" class="status">接続中…</div><div id="messages" aria-live="polite"></div>
   </section>
  </div>
 </section>
 </main>
 <form id="composer" class="composer hidden"><div class="compose-row"><label for="photo" class="secondary" style="padding:10px 12px;border-radius:10px;cursor:pointer;white-space:nowrap">写真<input id="photo" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/avif" hidden></label><textarea id="messageText" placeholder="メッセージを書く…" maxlength="4000" aria-label="メッセージ"></textarea><button id="send" type="submit">送信</button></div><div id="photoName" class="small muted"></div><div class="small muted">写真は最大10MBまで選択でき、保存時に256KB以下へ自動圧縮します。保存から3日後に自動削除されます。</div></form>
-<div id="photoViewer" class="photo-viewer hidden" role="dialog" aria-modal="true" aria-label="写真表示"><button id="photoClose" class="photo-close" type="button" aria-label="写真を閉じる">×</button><div class="photo-viewer-inner"><img id="photoViewerImage" alt="拡大表示された写真"></div></div>
+<section id="callPanel" class="photo-viewer hidden" role="dialog" aria-modal="true" aria-label="通話"><div class="panel" style="width:min(960px,100%);max-height:100%;overflow:auto"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><strong id="callTitle">通話</strong><button id="callEndButton" class="secondary" type="button">通話を終了</button></div><p id="callStatus" class="muted">接続準備中…</p><div id="remoteVideos" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:10px"></div><video id="localVideo" autoplay playsinline muted style="display:none;width:min(220px,45%);max-height:180px;object-fit:cover;border-radius:12px;margin-top:10px"></video><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px"><button id="muteButton" class="secondary" type="button">マイクをミュート</button><button id="cameraButton" class="secondary" type="button">カメラをオフ</button><button id="audioOnlyButton" class="secondary" type="button">音声のみ</button></div></div></section>\n<div id="photoViewer" class="photo-viewer hidden" role="dialog" aria-modal="true" aria-label="写真表示"><button id="photoClose" class="photo-close" type="button" aria-label="写真を閉じる">×</button><div class="photo-viewer-inner"><img id="photoViewerImage" alt="拡大表示された写真"></div></div>
 <script>
 const $ = id => document.getElementById(id);
 const BASE_PATH = location.pathname.startsWith("/chatsite") ? "/chatsite" : "";
 const appUrl = path => BASE_PATH + (path.startsWith("/") ? path : "/" + path);
 const APP_SCOPE = BASE_PATH ? BASE_PATH + "/" : "/";
 let currentUser = null, pollTimer = null, selectedPhoto = null, registerMode = false;
-let conversations = [], currentConversation = null, selectedGroupMembers = new Set(), searchTimer = null, lastConversationRenderKey = "";
+let conversations = [], currentConversation = null, selectedGroupMembers = new Set(), searchTimer = null, lastConversationRenderKey = "";\nlet activeCall = null, callPeer = null, localStream = null, callPollTimer = null, signalPollTimer = null, signalCursor = 0, makingOffer = false, remoteStream = null;
 function setStatus(s){$("status").textContent=s}
 function openPhotoViewer(src, alt){
  $("photoViewerImage").src=src;$("photoViewerImage").alt=alt||"共有された写真";
@@ -133,7 +133,7 @@ async function loadConversations(){
 async function selectConversation(id, reloadList=true){
  const c=conversations.find(item=>item.id===id);if(!c)return;
  currentConversation=c;$("conversationTitle").textContent=c.name;$("conversationInfo").textContent=(c.type==="group"?"グループ":"ダイレクトメッセージ")+" · "+c.members+"人";
- $("addMembersButton").classList.toggle("hidden",c.type!=="group");
+ $("callActions").classList.toggle("hidden",c.type!=="dm" || c.members!==2);\n $("addMembersButton").classList.toggle("hidden",c.type!=="group");
  $("viewMembersButton").classList.toggle("hidden",c.type!=="group");
  $("memberListPanel").classList.add("hidden");
  $("composer").classList.remove("hidden");renderConversations();await loadMessages();
@@ -157,13 +157,127 @@ async function searchUsers(){
   });
  }catch(e){box.innerHTML='<div class="empty-state"></div>';box.firstChild.textContent=e.message}
 }
-function showSignedIn(user){
+
+function callApi(id, suffix=""){return api("/api/calls"+(id?"/"+encodeURIComponent(id):"")+suffix)}
+function stopCallPolling(){if(callPollTimer)clearInterval(callPollTimer);if(signalPollTimer)clearInterval(signalPollTimer);callPollTimer=null;signalPollTimer=null}
+function closeCallUi(){ $("callPanel").classList.add("hidden"); $("remoteVideos").replaceChildren(); $("localVideo").srcObject=null; $("localVideo").style.display="none"; }
+async function cleanupCall(notify=true){
+ const old=activeCall;activeCall=null;stopCallPolling();
+ if(notify&&old){try{await callApi(old.id,"/end",{method:"POST"})}catch{}}
+ if(callPeer){try{callPeer.onicecandidate=null;callPeer.ontrack=null;callPeer.close()}catch{}}
+ callPeer=null;
+ if(localStream){localStream.getTracks().forEach(t=>t.stop());localStream=null}
+ remoteStream=null;closeCallUi();$("callStatus").textContent="通話は終了しました";
+}
+async function endCall(){await cleanupCall(true)}
+function attachRemoteStream(stream){
+ let v=$("remoteVideos").querySelector("video");
+ if(!v){v=document.createElement("video");v.autoplay=true;v.playsInline=true;v.style.cssText="width:100%;max-height:60vh;object-fit:contain;background:#05070a;border-radius:12px";$("remoteVideos").append(v)}
+ v.srcObject=stream;
+}
+async function sendSignal(type,data){
+ if(!activeCall)return;
+ try{await callApi(activeCall.id,"/signals",{method:"POST",body:JSON.stringify({type,data})})}
+ catch(e){$("callStatus").textContent="接続情報の送信に失敗しました: "+e.message}
+}
+async function ensurePeer(){
+ if(callPeer)return callPeer;
+ callPeer=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"}]});
+ remoteStream=new MediaStream();
+ callPeer.onicecandidate=e=>{if(e.candidate)sendSignal("candidate",e.candidate.toJSON())};
+ callPeer.ontrack=e=>{if(e.streams&&e.streams[0])attachRemoteStream(e.streams[0]);else{remoteStream.addTrack(e.track);attachRemoteStream(remoteStream)}};
+ callPeer.onconnectionstatechange=()=>{if(!callPeer)return;const state=callPeer.connectionState;$("callStatus").textContent=state==="connected"?"通話中":state==="connecting"?"相手に接続中…":state==="failed"?"直接接続できません。ネットワークやTURN設定を確認してください":state==="disconnected"?"接続が不安定です":state==="closed"?"通話終了":$("callStatus").textContent};
+ if(localStream)localStream.getTracks().forEach(t=>callPeer.addTrack(t,localStream));
+ return callPeer;
+}
+async function startCall(kind){
+ if(!currentConversation||currentConversation.type!=="dm"||currentConversation.members!==2)return;
+ try{
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error("通話にはHTTPS接続とマイク・カメラへのアクセスが必要です");
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:kind==="video"});
+  localStream=stream;activeCall=await callApi("",{method:"POST",body:JSON.stringify({conversationId:currentConversation.id,kind})});
+  activeCall=activeCall.call;signalCursor=0;
+  $("callTitle").textContent=(kind==="video"?"ビデオ通話":"音声通話")+" · "+currentConversation.name;
+  $("callStatus").textContent="発信中…";$("callPanel").classList.remove("hidden");
+  $("localVideo").srcObject=stream;$("localVideo").style.display=kind==="video"?"block":"none";
+  await ensurePeer();startCallPolling();
+ }catch(e){if(localStream){localStream.getTracks().forEach(t=>t.stop());localStream=null}activeCall=null;setStatus("発信エラー: "+e.message)}
+}
+async function acceptIncomingCall(call){
+ try{
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:call.kind==="video"});
+  const data=await callApi(call.id,"/answer",{method:"POST",body:JSON.stringify({accept:true})});
+  activeCall=data.call;localStream=stream;signalCursor=0;
+  $("callTitle").textContent=(call.kind==="video"?"ビデオ通話":"音声通話")+" · "+call.fromName;
+  $("callStatus").textContent="通話に接続中…";$("callPanel").classList.remove("hidden");
+  $("localVideo").srcObject=stream;$("localVideo").style.display=call.kind==="video"?"block":"none";
+  await ensurePeer();startCallPolling();
+ }catch(e){setStatus("通話に応答できませんでした: "+e.message);try{await callApi(call.id,"/answer",{method:"POST",body:JSON.stringify({accept:false})})}catch{}}
+}
+async function processSignals(){
+ if(!activeCall||!callPeer)return;
+ try{
+  const data=await callApi(activeCall.id,"/signals?after="+signalCursor);
+  for(const sig of data.signals||[]){
+   signalCursor=Math.max(signalCursor,sig.seq);
+   if(sig.type==="offer"){
+    await callPeer.setRemoteDescription(sig.data);
+    const answer=await callPeer.createAnswer();await callPeer.setLocalDescription(answer);
+    await sendSignal("answer",callPeer.localDescription.toJSON());
+   }else if(sig.type==="answer"){
+    if(callPeer.signalingState==="have-local-offer")await callPeer.setRemoteDescription(sig.data);
+   }else if(sig.type==="candidate"){
+    try{await callPeer.addIceCandidate(sig.data)}catch(e){console.warn("ICE candidate:",e)}
+   }
+  }
+ }catch(e){console.warn("通話シグナリング:",e)}
+}
+function startCallPolling(){
+ stopCallPolling();
+ callPollTimer=setInterval(async()=>{
+  if(!activeCall)return;
+  try{
+   const d=await callApi(activeCall.id);
+   if(d.call.status==="ended"||d.call.status==="declined"||d.call.status==="missed"){await cleanupCall(false);setStatus("通話は終了しました");return}
+   if(d.call.status==="accepted"&&activeCall.caller&&callPeer&&callPeer.signalingState==="stable"&&!makingOffer){
+    makingOffer=true;try{const offer=await callPeer.createOffer();await callPeer.setLocalDescription(offer);await sendSignal("offer",callPeer.localDescription.toJSON())}finally{makingOffer=false}
+   }
+   if(d.call.status==="ringing")$("callStatus").textContent="発信中…";
+   else if(d.call.status==="accepted")$("callStatus").textContent="相手に接続中…";
+  }catch(e){$("callStatus").textContent="通話状態の確認に失敗しました"}
+ },1500);
+ signalPollTimer=setInterval(processSignals,700);
+}
+async function pollIncomingCalls(){
+ if(!currentUser||activeCall)return;
+ try{
+  const data=await callApi("");
+  const incoming=(data.calls||[]).find(c=>c.status==="ringing"&&c.calleeUid===currentUser.uid);
+  if(!incoming)return;
+  const answer=window.confirm(incoming.fromName+" から"+(incoming.kind==="video"?"ビデオ":"音声")+"通話の着信です。応答しますか？");
+  if(answer)await acceptIncomingCall(incoming);
+  else await callApi(incoming.id,"/answer",{method:"POST",body:JSON.stringify({accept:false})});
+ }catch(e){console.warn("着信確認:",e)}
+}
+$("audioCallButton").addEventListener("click",()=>startCall("audio"));
+$("videoCallButton").addEventListener("click",()=>startCall("video"));
+$("callEndButton").addEventListener("click",endCall);
+$("muteButton").addEventListener("click",()=>{
+ if(!localStream)return;const tracks=localStream.getAudioTracks();const muted=tracks.some(t=>t.enabled);tracks.forEach(t=>t.enabled=!muted);$("muteButton").textContent=muted?"マイクをオン":"マイクをミュート";
+});
+$("cameraButton").addEventListener("click",()=>{
+ if(!localStream)return;const tracks=localStream.getVideoTracks();if(!tracks.length)return;const off=tracks.some(t=>t.enabled);tracks.forEach(t=>t.enabled=!off);$("cameraButton").textContent=off?"カメラをオン":"カメラをオフ";
+});
+$("audioOnlyButton").addEventListener("click",()=>{
+ if(!localStream)return;localStream.getVideoTracks().forEach(t=>{t.stop();if(callPeer){const sender=callPeer.getSenders().find(s=>s.track===t);if(sender)callPeer.removeTrack(sender)}});$("localVideo").style.display="none";$("cameraButton").disabled=true;$("callStatus").textContent="音声通話中（カメラ停止）";
+});
+\nfunction showSignedIn(user){
  currentUser=user;$("loginPanel").classList.add("hidden");$("chat").classList.remove("hidden");
  $("userLabel").textContent=user.username;$("signOut").classList.remove("hidden");$("notifyButton").classList.remove("hidden");
  refreshNotificationButton();
  $("composer").classList.add("hidden");loadConversations();searchUsers();
  if(pollTimer)clearInterval(pollTimer);
- pollTimer=setInterval(()=>{loadConversations();loadMessages()},3000);
+ pollTimer=setInterval(()=>{loadConversations();loadMessages();pollIncomingCalls()},3000);
 }
 function showAuth(){
  $("loginPanel").classList.remove("hidden");$("chat").classList.add("hidden");$("composer").classList.add("hidden");
@@ -237,7 +351,7 @@ $("viewMembersButton").addEventListener("click",async()=>{
   panel.classList.remove("hidden");
  }catch(e){setStatus("メンバー一覧エラー: "+e.message)}
 });
-$("signOut").addEventListener("click",async()=>{await disableNotifications();try{await api("/api/logout",{method:"POST"})}catch{}currentUser=null;currentConversation=null;conversations=[];if(pollTimer)clearInterval(pollTimer);pollTimer=null;registerMode=false;showAuth()});
+$("signOut").addEventListener("click",async()=>{await cleanupCall(true);await disableNotifications();try{await api("/api/logout",{method:"POST"})}catch{}currentUser=null;currentConversation=null;conversations=[];if(pollTimer)clearInterval(pollTimer);pollTimer=null;registerMode=false;showAuth()});
 $("userSearch").addEventListener("input",()=>{clearTimeout(searchTimer);searchTimer=setTimeout(searchUsers,180)});
 $("addMembersButton").addEventListener("click",async()=>{
  if(!currentConversation||currentConversation.type!=="group")return;
