@@ -42,6 +42,19 @@ const pushConfigured = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && process.
 if (pushConfigured) webpush.setVapidDetails(process.env.VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
 app.disable("x-powered-by");
+const GITHUB_PAGES_ORIGIN = "https://harusinn0422.github.io";
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin === GITHUB_PAGES_ORIGIN) {
+    res.setHeader("Access-Control-Allow-Origin", GITHUB_PAGES_ORIGIN);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Max-Age", "600");
+  }
+  if (req.method === "OPTIONS" && origin === GITHUB_PAGES_ORIGIN) return res.status(204).end();
+  next();
+});
 app.use(express.json({ limit: "1mb" }));
 
 async function ensureDataDirs() {
@@ -120,8 +133,10 @@ async function writeSubscriptions(data) {
   await fsp.rename(tmp, SUBSCRIPTIONS_FILE);
 }
 function getSession(req) {
+  const authorization = req.headers.authorization || "";
+  const bearer = authorization.match(/^Bearer ([a-f0-9]{64})$/i);
   const cookie = req.headers.cookie || "";
-  const match = cookie.match(/(?:^|;\s*)chatsite_session=([a-f0-9]{64})(?:;|$)/);
+  const match = bearer || cookie.match(/(?:^|;\s*)chatsite_session=([a-f0-9]{64})(?:;|$)/);
   if (!match) return null;
   const session = sessions.get(match[1]);
   if (!session) return null;
@@ -262,7 +277,7 @@ app.post("/api/register", async (req, res, next) => {
     sessions.set(token, { uid, username, expiresAt: Date.now() + SESSION_TTL_MS });
     await writeSessions(Object.fromEntries(sessions));
     setSessionCookie(req, res, token);
-    res.status(201).json({ user: { uid, username } });
+    res.status(201).json({ user: { uid, username }, token });
   } catch (e) { next(e); }
 });
 app.post("/api/login", async (req, res, next) => {
@@ -282,7 +297,7 @@ app.post("/api/login", async (req, res, next) => {
     sessions.set(token, { uid: user.uid, username: user.username, expiresAt: Date.now() + SESSION_TTL_MS });
     await writeSessions(Object.fromEntries(sessions));
     setSessionCookie(req, res, token);
-    res.json({ user: { uid: user.uid, username: user.username } });
+    res.json({ user: { uid: user.uid, username: user.username }, token });
   } catch (e) { next(e); }
 });
 app.get("/api/me", requireLogin, (req, res) => res.json({ user: req.user }));
