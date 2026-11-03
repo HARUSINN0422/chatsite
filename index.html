@@ -83,9 +83,15 @@ input[type=text],input[type=password]{display:block;width:100%;margin:8px 0 14px
 </div>
 <script>
 const $ = id => document.getElementById(id);
+const IS_GITHUB_PAGES = location.hostname === "harusinn0422.github.io";
 const BASE_PATH = location.pathname.startsWith("/chatsite") ? "/chatsite" : "";
+const API_BASE = IS_GITHUB_PAGES ? "https://harusinn.com/chatsite" : BASE_PATH;
 const appUrl = path => BASE_PATH + (path.startsWith("/") ? path : "/" + path);
+const apiUrl = path => API_BASE + (path.startsWith("/") ? path : "/" + path);
 const APP_SCOPE = BASE_PATH ? BASE_PATH + "/" : "/";
+const TOKEN_KEY = "chatsite_api_token";
+function getApiToken(){try{return localStorage.getItem(TOKEN_KEY)||""}catch{return ""}}
+function setApiToken(token){try{if(token)localStorage.setItem(TOKEN_KEY,token);else localStorage.removeItem(TOKEN_KEY)}catch{}}
 let currentUser = null, pollTimer = null, selectedPhoto = null, registerMode = false;
 let conversations = [], currentConversation = null, selectedGroupMembers = new Set(), searchTimer = null, lastConversationRenderKey = "";
 function setStatus(s){$("status").textContent=s}
@@ -102,7 +108,9 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("photoViewer").c
 async function api(url, options={}) {
  const headers={...(options.headers||{})};
  if(options.body && !(options.body instanceof FormData)) headers["Content-Type"]="application/json";
- const res=await fetch(appUrl(url),{credentials:"same-origin",...options,headers});
+ const token=getApiToken();
+ if(token)headers.Authorization="Bearer "+token;
+ const res=await fetch(apiUrl(url),{...options,headers,credentials:IS_GITHUB_PAGES?"omit":"same-origin"});
  const data=await res.json().catch(()=>({}));
  if(!res.ok) throw new Error(data.error||("サーバーエラー ("+res.status+")"));
  return data;
@@ -119,9 +127,7 @@ function setInformationCookie(version){
 }
 async function checkInformation(){
  try{
-  const response=await fetch(appUrl("/api/information"),{credentials:"same-origin",cache:"no-store"});
-  if(!response.ok)throw new Error("お知らせの取得に失敗しました ("+response.status+")");
-  const data=await response.json();
+  const data=await api("/api/information");
   const content=typeof data.content==="string"?data.content:"";
   if(!content.trim()||typeof data.version!=="string")return;
   if(getInformationCookie()===data.version)return;
@@ -169,7 +175,7 @@ function renderMessages(messages){
   meta.textContent=(m.displayName||"ユーザー")+" · "+(m.createdAt?new Date(m.createdAt).toLocaleString():"");el.append(meta);
   if(m.uid===currentUser.uid){const read=document.createElement("div");read.className="muted small";const count=(m.readBy||[]).filter(uid=>uid!==currentUser.uid).length;read.textContent=count?"既読 "+count:"未読";el.append(read)}
   if(m.text){const p=document.createElement("div");p.textContent=m.text;el.append(p)}
-  if(m.imageUrl){const a=document.createElement("a");a.href=appUrl(m.imageUrl);a.className="photo-link";a.setAttribute("aria-label","写真を拡大表示");a.addEventListener("click",e=>{e.preventDefault();openPhotoViewer(a.href,"共有された写真")});const img=document.createElement("img");img.src=appUrl(m.imageUrl);img.alt="共有された写真";img.loading="lazy";img.onerror=()=>{a.removeAttribute("href");a.removeEventListener("click",()=>{});img.alt="この写真は保存期限を過ぎたため削除されています";img.style.display="none";const note=document.createElement("div");note.className="muted small";note.textContent="写真は保存から3日経過したため削除されています";el.append(note)};a.append(img);el.append(a)}
+  if(m.imageUrl){const a=document.createElement("a");a.href=apiUrl(m.imageUrl);a.className="photo-link";a.setAttribute("aria-label","写真を拡大表示");a.addEventListener("click",e=>{e.preventDefault();openPhotoViewer(a.href,"共有された写真")});const img=document.createElement("img");img.src=apiUrl(m.imageUrl);img.alt="共有された写真";img.loading="lazy";img.onerror=()=>{a.removeAttribute("href");a.removeEventListener("click",()=>{});img.alt="この写真は保存期限を過ぎたため削除されています";img.style.display="none";const note=document.createElement("div");note.className="muted small";note.textContent="写真は保存から3日経過したため削除されています";el.append(note)};a.append(img);el.append(a)}
   $("messages").append(el);
  });
 }
@@ -295,7 +301,7 @@ async function enableNotifications(){
    return;
   }
   if(await Notification.requestPermission()!=="granted")throw new Error("ブラウザの通知許可が必要です");
-  const keyRes=await fetch(appUrl("/api/push/public-key"),{cache:"no-store"});const keyData=await keyRes.json();
+  const keyRes=await fetch(apiUrl("/api/push/public-key"),{cache:"no-store"});const keyData=await keyRes.json();
   if(!keyRes.ok||!keyData.publicKey)throw new Error(keyData.error||"サーバー側のVAPID設定が未完了です");
   const swUrl=appUrl("/sw.js");const registration=await navigator.serviceWorker.register(swUrl,{scope:APP_SCOPE});await navigator.serviceWorker.ready;
   let subscription=await registration.pushManager.getSubscription();
@@ -328,6 +334,7 @@ $("authForm").addEventListener("submit",async e=>{
  try{
   const username=$("username").value.trim(),password=$("password").value;
   const data=await api(registerMode?"/api/register":"/api/login",{method:"POST",body:JSON.stringify({username,password})});
+  if(IS_GITHUB_PAGES)setApiToken(data.token);
   $("password").value="";showSignedIn(data.user);
  }catch(err){$("loginError").textContent=err.message}
  finally{$("authSubmit").disabled=false}
@@ -351,6 +358,7 @@ $("signOut").addEventListener("click",async()=>{
  button.dataset.loggingOut="true";button.disabled=true;button.textContent="ログアウト中…";
  // End the server session first; notification cleanup must never block logout.
  try{await api("/api/logout",{method:"POST"})}catch(e){console.error("[ChatSite] server logout failed:",e)}
+ setApiToken("");
  currentUser=null;currentConversation=null;conversations=[];selectedGroupMembers.clear();
  if(pollTimer)clearInterval(pollTimer);pollTimer=null;
  closeMobileSidebar();registerMode=false;showAuth();
