@@ -42,17 +42,37 @@ const pushConfigured = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && process.
 if (pushConfigured) webpush.setVapidDetails(process.env.VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
 app.disable("x-powered-by");
+
+// GitHub Pages からの API アクセスを許可する。
+// 追加の公開フロントエンドを使う場合は .env の CORS_ALLOWED_ORIGINS に
+// https://example.github.io のような Origin をカンマ区切りで指定する。
 const GITHUB_PAGES_ORIGIN = "https://harusinn0422.github.io";
+const ALLOWED_CORS_ORIGINS = new Set([
+  GITHUB_PAGES_ORIGIN,
+  ...(process.env.CORS_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(value => value.trim().replace(/\/$/, ""))
+    .filter(Boolean)
+]);
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin === GITHUB_PAGES_ORIGIN) {
-    res.setHeader("Access-Control-Allow-Origin", GITHUB_PAGES_ORIGIN);
-    res.setHeader("Vary", "Origin");
+  const origin = typeof req.headers.origin === "string" ? req.headers.origin.replace(/\/$/, "") : "";
+
+  if (origin && ALLOWED_CORS_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.setHeader("Access-Control-Max-Age", "600");
+    res.setHeader("Access-Control-Max-Age", "86400");
   }
-  if (req.method === "OPTIONS" && origin === GITHUB_PAGES_ORIGIN) return res.status(204).end();
+
+  // Authorization ヘッダーを使う GitHub Pages の preflight に応答する。
+  if (req.method === "OPTIONS") {
+    if (!origin || !ALLOWED_CORS_ORIGINS.has(origin)) {
+      return res.status(403).json({ error: "このサイトからの API アクセスは許可されていません" });
+    }
+    return res.status(204).end();
+  }
+
   next();
 });
 app.use(express.json({ limit: "1mb" }));
